@@ -44,7 +44,8 @@ npm install
 npm run dev
 ```
 
-Then open the printed localhost URL, type an address, hit Search.
+Then open the printed localhost URL, pick one of the 5 PoC locations
+from the dropdown (`src/data/locations.ts`), hit Search.
 
 ## The India / Tapestry gap
 

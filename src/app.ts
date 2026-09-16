@@ -5,107 +5,66 @@ import GraphicsLayer from "@arcgis/core/layers/GraphicsLayer";
 import Graphic from "@arcgis/core/Graphic";
 import Circle from "@arcgis/core/geometry/Circle";
 import BasemapGallery from "@arcgis/core/widgets/BasemapGallery";
+import Fullscreen from "@arcgis/core/widgets/Fullscreen";
 import Expand from "@arcgis/core/widgets/Expand";
-import { geocodeAddress } from "./services/geocode";
 import { enrichPoint } from "./services/geoenrichment";
 import { sampleElevation } from "./services/elevation";
-import { solveRoute, type RouteResult } from "./services/routing";
 import { fetchPoiCategories, queryNearbyPois, type PoiResult } from "./services/poi";
 import { solveServiceAreaCatchment } from "./services/serviceArea";
 import type { Catchment } from "./services/catchment";
 import { ENRICHMENT_COLLECTIONS, type EnrichmentCollection } from "./data/enrichmentVariables";
+import { POC_LOCATIONS, type PocLocation } from "./data/locations";
 
 let currentSceneView: SceneView | null = null;
+let currentBigMapView: MapView | null = null;
 let miniViews: MapView[] = [];
 let poiCategoryList: string[] = [];
 
 function destroyAllViews() {
   currentSceneView?.destroy();
   currentSceneView = null;
+  currentBigMapView?.destroy();
+  currentBigMapView = null;
   miniViews.forEach((v) => v.destroy());
   miniViews = [];
 }
 
+// --- Category colors -------------------------------------------------
+
+// Same palette used for the consumer-styles donut, reused here so every
+// POI category gets a stable color across the checkbox picker and the
+// big map's layers/legend -- hashed off the category name so the color
+// doesn't shift around if categories are added/removed from the layer.
+const DONUT_COLORS = ["#0f6e56", "#5dcaa5", "#378add", "#b6771a", "#d85a30", "#6b4fbb", "#99355a", "#2f7d32", "#26215c", "#7f77dd"];
+
+function categoryColor(category: string): string {
+  let hash = 0;
+  for (let i = 0; i < category.length; i++) hash = (hash * 31 + category.charCodeAt(i)) >>> 0;
+  return DONUT_COLORS[hash % DONUT_COLORS.length];
+}
+
+// Keyword groups matching the 8 categories this PoC cares about --
+// any fetched category whose label contains one of these substrings
+// starts pre-checked in the "Nearby places" picker. Everything else
+// still shows up, just unchecked, so nothing from the source layer is
+// hidden -- it's only a sensible default selection.
+const POI_DEFAULT_KEYWORD_GROUPS: string[][] = [
+  ["restaurant", "qsr", "cafe", "cafeteria", "food", "dine", "dining"], // Restaurants and QSRs
+  ["gym", "fitness"], // Gyms
+  ["worship", "temple", "mosque", "church", "gurudwara", "religious"], // Places of worship
+  ["residential", "apartment", "housing", "society"], // Residential accommodations
+  ["market", "bazaar"], // Markets
+  ["department", "supermarket", "hypermarket"], // Departmental stores
+  ["retail", "shop", "store"], // Retail shops
+  ["park", "garden"], // Parks
+];
+
+function isDefaultPoiCategory(category: string): boolean {
+  const lower = category.toLowerCase();
+  return POI_DEFAULT_KEYWORD_GROUPS.some((group) => group.some((k) => lower.includes(k)));
+}
+
 // --- Pickers --------------------------------------------------------
-
-function buildCatchmentPanel(): string {
-  return `
-    <calcite-block heading="Catchment area" description="Defines the area used for enrichment and nearby-place searches" collapsible open>
-      <div class="catchment-row">
-        <label><input type="radio" name="catchment-type" value="ring" checked> Simple buffer</label>
-        <label><input type="radio" name="catchment-type" value="service-area"> Service area (10-min walk + 5-min drive)</label>
-      </div>
-      <div class="catchment-row" id="catchment-km-row">
-        <span class="catchment-row__label">Distance:</span>
-        <label><input type="radio" name="catchment-km" value="1" checked> 1 km</label>
-        <label><input type="radio" name="catchment-km" value="3"> 3 km</label>
-        <label><input type="radio" name="catchment-km" value="5"> 5 km</label>
-      </div>
-    </calcite-block>
-  `;
-}
-
-interface CatchmentSelection {
-  type: "ring" | "service-area";
-  km: number;
-}
-
-function getCatchmentSelection(root: HTMLElement): CatchmentSelection {
-  const type = ((root.querySelector('input[name="catchment-type"]:checked') as HTMLInputElement)?.value ?? "ring") as "ring" | "service-area";
-  const km = Number((root.querySelector('input[name="catchment-km"]:checked') as HTMLInputElement)?.value ?? "1");
-  return { type, km };
-}
-
-interface DemographicCatchment {
-  label: string;
-  catchment: Catchment;
-}
-
-interface ResolvedCatchments {
-  primary: Catchment;
-  primaryLabel: string;
-  summaryLabel: string;
-  demographics: DemographicCatchment[];
-}
-
-async function resolveCatchments(x: number, y: number, selection: CatchmentSelection): Promise<ResolvedCatchments> {
-  if (selection.type === "ring") {
-    const catchment: Catchment = { kind: "ring", km: selection.km };
-    const label = `${selection.km} km buffer`;
-    return { primary: catchment, primaryLabel: label, summaryLabel: label, demographics: [{ label, catchment }] };
-  }
-
-  const [walkResult, driveResult] = await Promise.allSettled([
-    solveServiceAreaCatchment(x, y, "Walking Time", 10),
-    solveServiceAreaCatchment(x, y, "Driving Time", 5),
-  ]);
-
-  let walkCatchment: Catchment;
-  if (walkResult.status === "fulfilled" && walkResult.value) {
-    walkCatchment = { kind: "polygon", rings: walkResult.value.rings };
-  } else {
-    console.error("Walk-time service area failed -- falling back to a 1 km ring.", walkResult.status === "rejected" ? walkResult.reason : "no polygon returned");
-    walkCatchment = { kind: "ring", km: 1 };
-  }
-
-  let driveCatchment: Catchment;
-  if (driveResult.status === "fulfilled" && driveResult.value) {
-    driveCatchment = { kind: "polygon", rings: driveResult.value.rings };
-  } else {
-    console.error("Drive-time service area failed -- falling back to a 3 km ring.", driveResult.status === "rejected" ? driveResult.reason : "no polygon returned");
-    driveCatchment = { kind: "ring", km: 3 };
-  }
-
-  return {
-    primary: walkCatchment,
-    primaryLabel: "10-min walk-time catchment",
-    summaryLabel: "10-min walk + 5-min drive catchments",
-    demographics: [
-      { label: "10-min walk-time catchment", catchment: walkCatchment },
-      { label: "5-min drive-time catchment", catchment: driveCatchment },
-    ],
-  };
-}
 
 function buildVariablePanel(): string {
   return `
@@ -143,10 +102,11 @@ async function buildPoiPicker(container: HTMLElement) {
     return;
   }
   container.innerHTML = `
-    <calcite-block heading="Nearby places" description="Choose which categories to fetch from your uploaded POI layer" collapsible open>
+    <calcite-block heading="Nearby places" description="Choose which categories to fetch from your uploaded POI layer — each shows up as its own toggleable, color-coded layer on the map" collapsible open>
       ${categories.map((cat, i) => `
         <calcite-label layout="inline" class="poi-checkbox-label">
-          <calcite-checkbox class="poi-checkbox" data-index="${i}"></calcite-checkbox>
+          <calcite-checkbox class="poi-checkbox" data-index="${i}" ${isDefaultPoiCategory(cat) ? "checked" : ""}></calcite-checkbox>
+          <span class="poi-swatch" style="background:${categoryColor(cat)}"></span>
           ${cat}
         </calcite-label>
       `).join("")}
@@ -160,35 +120,95 @@ function getSelectedPoiCategories(root: HTMLElement): string[] {
     .map((cb) => poiCategoryList[Number(cb.dataset.index)]);
 }
 
+// --- Catchments -------------------------------------------------------
+// Fixed to the 10-min walk + 5-min drive service-area pair for every
+// location in this PoC -- there's no ring/buffer choice anymore since
+// all 5 sites use the same catchment definition.
+
+interface DemographicCatchment {
+  label: string;
+  catchment: Catchment;
+}
+
+interface ResolvedCatchments {
+  primary: Catchment;
+  primaryLabel: string;
+  summaryLabel: string;
+  demographics: DemographicCatchment[];
+}
+
+async function resolveCatchments(x: number, y: number): Promise<ResolvedCatchments> {
+  const [walkResult, driveResult] = await Promise.allSettled([
+    solveServiceAreaCatchment(x, y, "Walking Time", 10),
+    solveServiceAreaCatchment(x, y, "Driving Time", 5),
+  ]);
+
+  let walkCatchment: Catchment;
+  if (walkResult.status === "fulfilled" && walkResult.value) {
+    walkCatchment = { kind: "polygon", rings: walkResult.value.rings };
+  } else {
+    console.error("Walk-time service area failed -- falling back to a 1 km ring.", walkResult.status === "rejected" ? walkResult.reason : "no polygon returned");
+    walkCatchment = { kind: "ring", km: 1 };
+  }
+
+  let driveCatchment: Catchment;
+  if (driveResult.status === "fulfilled" && driveResult.value) {
+    driveCatchment = { kind: "polygon", rings: driveResult.value.rings };
+  } else {
+    console.error("Drive-time service area failed -- falling back to a 3 km ring.", driveResult.status === "rejected" ? driveResult.reason : "no polygon returned");
+    driveCatchment = { kind: "ring", km: 3 };
+  }
+
+  return {
+    primary: walkCatchment,
+    primaryLabel: "10-min walk-time catchment",
+    summaryLabel: "10-min walk + 5-min drive catchments",
+    demographics: [
+      { label: "10-min walk-time catchment", catchment: walkCatchment },
+      { label: "5-min drive-time catchment", catchment: driveCatchment },
+    ],
+  };
+}
+
 // --- App shell --------------------------------------------------------
 
 export function renderApp(root: HTMLElement) {
   root.innerHTML = `
     <div class="app-shell">
-      <div class="search-bar">
-        <calcite-input id="address-input" placeholder="Enter an address" style="width: 420px"></calcite-input>
-        <calcite-button id="search-btn">Search</calcite-button>
+      <div id="selection-summary" class="selection-summary" style="display:none">
+        <div class="selection-summary__text">
+          <span class="selection-summary__label">Location:</span>
+          <span id="selection-summary__location">—</span>
+        </div>
+        <calcite-button id="edit-selection-btn" appearance="outline" scale="s">Edit selections</calcite-button>
       </div>
-      <div class="var-picker">
-        ${buildCatchmentPanel()}
-        ${buildVariablePanel()}
+      <div id="selection-panel">
+        <div class="search-bar">
+          <calcite-label layout="inline" style="width:420px">
+            Location
+            <calcite-select id="location-select">
+              ${POC_LOCATIONS.map((loc, i) => `<calcite-option value="${loc.id}" ${i === 0 ? "selected" : ""}>${loc.name}</calcite-option>`).join("")}
+            </calcite-select>
+          </calcite-label>
+          <calcite-button id="search-btn">Search</calcite-button>
+        </div>
+        <div class="catchment-note">Enrichment always uses a fixed 10-minute walk + 5-minute drive service-area catchment for whichever location is selected.</div>
+        <div class="var-picker">
+          ${buildVariablePanel()}
+        </div>
+        <div class="poi-picker"></div>
       </div>
-      <div class="poi-picker"></div>
       <div id="results"></div>
     </div>
   `;
 
-  const input = root.querySelector("#address-input") as any;
+  const select = root.querySelector("#location-select") as any;
   const button = root.querySelector("#search-btn") as HTMLElement;
   const results = root.querySelector("#results") as HTMLDivElement;
-
-  root.querySelectorAll('input[name="catchment-type"]').forEach((el) =>
-    el.addEventListener("change", () => {
-      const kmRow = root.querySelector("#catchment-km-row") as HTMLElement;
-      const type = (root.querySelector('input[name="catchment-type"]:checked') as HTMLInputElement)?.value;
-      kmRow.style.display = type === "ring" ? "" : "none";
-    })
-  );
+  const selectionPanel = root.querySelector("#selection-panel") as HTMLElement;
+  const selectionSummary = root.querySelector("#selection-summary") as HTMLElement;
+  const selectionSummaryLocation = root.querySelector("#selection-summary__location") as HTMLElement;
+  const editBtn = root.querySelector("#edit-selection-btn") as HTMLElement;
 
   root.querySelector("#select-all-vars")?.addEventListener("click", () => {
     root.querySelectorAll<any>(".var-checkbox").forEach((cb) => (cb.checked = true));
@@ -199,60 +219,62 @@ export function renderApp(root: HTMLElement) {
 
   buildPoiPicker(root.querySelector(".poi-picker") as HTMLElement);
 
-  button.addEventListener("click", () => {
+  editBtn.addEventListener("click", () => {
+    selectionPanel.style.display = "";
+    selectionSummary.style.display = "none";
+  });
+
+  button.addEventListener("click", async () => {
+    const locationId = select.value;
+    const location = POC_LOCATIONS.find((l) => l.id === locationId) ?? POC_LOCATIONS[0];
     const variableKeys = getSelectedVariableKeys(root);
     const poiCategories = getSelectedPoiCategories(root);
-    const catchmentSelection = getCatchmentSelection(root);
-    runSearch(input.value, results, variableKeys, poiCategories, catchmentSelection);
+
+    await runSearch(location, results, variableKeys, poiCategories);
+
+    // Collapse the selection UI and jump straight to the results once
+    // a search has actually run, so the first card is what's in view.
+    selectionPanel.style.display = "none";
+    selectionSummaryLocation.textContent = location.name;
+    selectionSummary.style.display = "";
+    results.scrollIntoView({ behavior: "smooth", block: "start" });
   });
 }
 
-const CACHE_VERSION = "v8";
+const CACHE_VERSION = "v9";
 
 async function runSearch(
-  addressText: string,
+  location: PocLocation,
   results: HTMLDivElement,
   variableKeys: string[],
-  poiCategories: string[],
-  catchmentSelection: CatchmentSelection
+  poiCategories: string[]
 ) {
-  if (!addressText) return;
-
-  const signature = `${[...variableKeys].sort().join(",")}|${[...poiCategories].sort().join(",")}|${catchmentSelection.type}:${catchmentSelection.km}`;
-  const cacheKey = `address-insights:${CACHE_VERSION}:${addressText.toLowerCase().trim()}:${signature}`;
+  const signature = `${[...variableKeys].sort().join(",")}|${[...poiCategories].sort().join(",")}`;
+  const cacheKey = `address-poc:${CACHE_VERSION}:${location.id}:${signature}`;
   const cached = sessionStorage.getItem(cacheKey);
 
-  results.innerHTML = `<calcite-loader label="Looking up address" active></calcite-loader>`;
+  results.innerHTML = `<calcite-loader label="Loading location" active></calcite-loader>`;
 
   let bundle: any = null;
 
   if (cached) {
     bundle = JSON.parse(cached);
-    if (!bundle?.location) {
+    if (!bundle?.demographicsSections) {
       console.warn("Cached entry missing expected shape, re-fetching.");
       bundle = null;
     }
   }
 
   if (!bundle) {
-    const geocoded = await geocodeAddress(addressText);
-    if (!geocoded) {
-      results.innerHTML = `<calcite-notice open kind="danger"><div slot="message">No match found for that address.</div></calcite-notice>`;
-      return;
-    }
-
-    const catchments = await resolveCatchments(geocoded.location.x, geocoded.location.y, catchmentSelection);
-
-    const destX = geocoded.location.x + 0.02;
-    const destY = geocoded.location.y + 0.015;
+    const catchments = await resolveCatchments(location.x, location.y);
 
     const [miscResults, poiSettled, enrichmentSettled] = await Promise.all([
       Promise.allSettled([
-        sampleElevation(geocoded.location.x, geocoded.location.y),
-        sampleElevationRing(geocoded.location.x, geocoded.location.y),
+        sampleElevation(location.x, location.y),
+        sampleElevationRing(location.x, location.y),
       ]),
-      Promise.allSettled(poiCategories.map((cat) => queryNearbyPois(geocoded.location.x, geocoded.location.y, cat, catchments.primary))),
-      Promise.allSettled(catchments.demographics.map((d) => enrichPoint(geocoded.location.x, geocoded.location.y, variableKeys, d.catchment))),
+      Promise.allSettled(poiCategories.map((cat) => queryNearbyPois(location.x, location.y, cat, catchments.primary))),
+      Promise.allSettled(catchments.demographics.map((d) => enrichPoint(location.x, location.y, variableKeys, d.catchment))),
     ]);
 
     const [elevationResult, ringResult] = miscResults;
@@ -278,39 +300,13 @@ async function runSearch(
       }
     });
 
-    const allPois = Object.values(poiByCategory).flat();
-    let routeDestX = destX;
-    let routeDestY = destY;
-    let destLabel = "Sample destination (no POI selected/found)";
-
-    if (allPois.length > 0) {
-      const nearest = allPois.reduce((best, p) => {
-        const d = (p.x - geocoded.location.x) ** 2 + (p.y - geocoded.location.y) ** 2;
-        const bd = (best.x - geocoded.location.x) ** 2 + (best.y - geocoded.location.y) ** 2;
-        return d < bd ? p : best;
-      });
-      routeDestX = nearest.x;
-      routeDestY = nearest.y;
-      destLabel = `${nearest.name} (${nearest.category})`;
-    }
-
-    const routeResult = await solveRoute(geocoded.location.x, geocoded.location.y, routeDestX, routeDestY).catch((err) => {
-      console.error("Routing failed:", err);
-      return null;
-    });
-
     bundle = {
-      address: geocoded.address,
-      score: geocoded.score,
-      location: geocoded.location,
-      rawAttributes: (geocoded.raw as any).attributes ?? {},
+      locationName: location.name,
+      location: { x: location.x, y: location.y },
       elevation: elevationResult.status === "fulfilled" ? elevationResult.value : null,
       elevationSamples: ringResult.status === "fulfilled" ? ringResult.value : [],
       demographicsSections,
       poiByCategory,
-      route: routeResult,
-      destination: { x: routeDestX, y: routeDestY, label: destLabel },
-      primaryCatchment: catchments.primary,
       primaryLabel: catchments.primaryLabel,
       summaryLabel: catchments.summaryLabel,
     };
@@ -354,18 +350,24 @@ function pointGraphic(x: number, y: number, color = "#d85a30") {
   });
 }
 
-function catchmentGraphic(x: number, y: number, catchment: Catchment) {
+function catchmentGraphic(
+  x: number,
+  y: number,
+  catchment: Catchment,
+  outlineColor = "#0f6e56",
+  fillColor: [number, number, number, number] = [15, 110, 86, 0.15]
+) {
   if (catchment.kind === "ring") {
     const circle = new Circle({
       center: { x, y, spatialReference: { wkid: 4326 } } as any,
       radius: catchment.km,
       radiusUnit: "kilometers",
     });
-    return new Graphic({ geometry: circle, symbol: { type: "simple-fill", color: [15, 110, 86, 0.15], outline: { color: "#0f6e56", width: 1.5 } } as any });
+    return new Graphic({ geometry: circle, symbol: { type: "simple-fill", color: fillColor, outline: { color: outlineColor, width: 1.5 } } as any });
   }
   return new Graphic({
     geometry: { type: "polygon", rings: catchment.rings, spatialReference: { wkid: 4326 } } as any,
-    symbol: { type: "simple-fill", color: [15, 110, 86, 0.15], outline: { color: "#0f6e56", width: 1.5 } } as any,
+    symbol: { type: "simple-fill", color: fillColor, outline: { color: outlineColor, width: 1.5 } } as any,
   });
 }
 
@@ -388,21 +390,85 @@ async function createMiniMap(container: HTMLDivElement, x: number, y: number, ca
   return view;
 }
 
-async function createPoiMiniMap(container: HTMLDivElement, x: number, y: number, pois: { x: number; y: number }[], catchment: Catchment) {
-  const layer = new GraphicsLayer();
-  layer.add(catchmentGraphic(x, y, catchment));
-  layer.add(pointGraphic(x, y, "#0f6e56"));
-  pois.forEach((p) => layer.add(pointGraphic(p.x, p.y, "#378add")));
+// --- Big consolidated map (catchments + all POI layers) -----------------
+// Replaces the old per-POI-category minimaps, the route minimap, and the
+// demographics-area minimap: one 2D map with everything as a toggleable,
+// legended layer instead of a grid of small static-looking maps.
+
+async function createBigMap(
+  container: HTMLDivElement,
+  legendContainer: HTMLDivElement,
+  x: number,
+  y: number,
+  walkSection: DemographicCatchment,
+  driveSection: DemographicCatchment,
+  poiByCategory: Record<string, PoiResult[]>
+) {
+  const driveLayer = new GraphicsLayer({ title: driveSection.label });
+  driveLayer.add(catchmentGraphic(x, y, driveSection.catchment, "#378add", [55, 138, 221, 0.12]));
+
+  const walkLayer = new GraphicsLayer({ title: walkSection.label });
+  walkLayer.add(catchmentGraphic(x, y, walkSection.catchment, "#0f6e56", [15, 110, 86, 0.18]));
+
+  const centerLayer = new GraphicsLayer({ title: "Selected location" });
+  centerLayer.add(pointGraphic(x, y));
+
+  const poiLayers = Object.entries(poiByCategory).map(([category, pois]) => {
+    const layer = new GraphicsLayer({ title: category });
+    const color = categoryColor(category);
+    pois.forEach((p) => layer.add(pointGraphic(p.x, p.y, color)));
+    return layer;
+  });
 
   const view = new MapView({
     container,
-    map: new Map({ basemap: "arcgis/streets", layers: [layer] }),
+    map: new Map({ basemap: "arcgis/streets", layers: [driveLayer, walkLayer, ...poiLayers, centerLayer] }),
     constraints: { rotationEnabled: false },
     ui: { components: ["attribution"] },
   });
-  miniViews.push(view);
+  currentBigMapView = view;
   await view.when();
-  await view.goTo(layer.graphics.toArray(), { animate: false });
+
+  const fitGraphics = [...driveLayer.graphics.toArray(), ...walkLayer.graphics.toArray()];
+  await view.goTo(fitGraphics, { animate: false }).catch(() => {});
+
+  // Fullscreen toggle
+  const fullscreen = new Fullscreen({ view });
+  view.ui.add(fullscreen, "top-right");
+
+  // Basemap toggle -- same Expand + BasemapGallery pattern as the 3D scene card
+  const basemapGallery = new BasemapGallery({ view });
+  const basemapExpand = new Expand({ view, content: basemapGallery, expandIcon: "basemap", expandTooltip: "Change basemap" });
+  view.ui.add(basemapExpand, "top-right");
+
+  // Legend + per-layer visibility toggles -- a custom panel rather than
+  // the built-in Legend widget, since that widget only reads renderers
+  // off FeatureLayers and these are plain GraphicsLayers.
+  const legendRows = [
+    { title: driveLayer.title as string, color: "#378add", layer: driveLayer as GraphicsLayer },
+    { title: walkLayer.title as string, color: "#0f6e56", layer: walkLayer as GraphicsLayer },
+    ...poiLayers.map((l) => ({ title: l.title as string, color: categoryColor(l.title as string), layer: l as GraphicsLayer })),
+  ];
+  legendContainer.innerHTML = `
+    <div class="map-legend-panel">
+      ${legendRows.map((r, i) => `
+        <label class="fake-legend__row">
+          <input type="checkbox" class="map-legend__toggle" data-layer-index="${i}" checked>
+          <span class="fake-legend__swatch" style="background:${r.color}"></span>
+          ${r.title}
+        </label>
+      `).join("")}
+    </div>
+  `;
+  legendContainer.querySelectorAll<HTMLInputElement>(".map-legend__toggle").forEach((cb) => {
+    cb.addEventListener("change", () => {
+      const idx = Number(cb.dataset.layerIndex);
+      legendRows[idx].layer.visible = cb.checked;
+    });
+  });
+  const legendExpand = new Expand({ view, content: legendContainer, expandIcon: "legend", expandTooltip: "Legend & layers", expanded: true });
+  view.ui.add(legendExpand, "top-left");
+
   return view;
 }
 
@@ -473,8 +539,6 @@ function buildAgePyramid(enrichment: Record<string, any>): string | null {
   if (!pyramidHtml && !extraRows) return null;
   return `${pyramidHtml}${extraRows}`;
 }
-
-const DONUT_COLORS = ["#0f6e56", "#5dcaa5", "#378add", "#b6771a", "#d85a30", "#6b4fbb", "#99355a", "#2f7d32", "#26215c", "#7f77dd"];
 
 function buildConsumerStylesDonut(enrichment: Record<string, any>): string | null {
   const codes = Object.keys(consumerStylesLabels).filter((c) => c in enrichment);
@@ -579,16 +643,14 @@ async function renderResults(root: HTMLDivElement, data: any) {
   destroyAllViews();
 
   const {
-    address, score, location, rawAttributes, elevation, elevationSamples,
-    demographicsSections, poiByCategory, route: routeData, destination,
-    primaryCatchment, primaryLabel, summaryLabel,
+    locationName, location, elevation, elevationSamples,
+    demographicsSections, poiByCategory, summaryLabel,
   } = data as {
-    address: string; score: number; location: { x: number; y: number }; rawAttributes: any;
+    locationName: string; location: { x: number; y: number };
     elevation: number | null; elevationSamples: number[];
     demographicsSections: { label: string; catchment: Catchment; enrichment: Record<string, any> | null }[];
-    poiByCategory: Record<string, PoiResult[]>; route: RouteResult | null;
-    destination: { x: number; y: number; label: string };
-    primaryCatchment: Catchment; primaryLabel: string; summaryLabel: string;
+    poiByCategory: Record<string, PoiResult[]>;
+    summaryLabel: string;
   };
   const roughness = stdDev(elevationSamples || []);
   const x = location.x, y = location.y;
@@ -598,28 +660,38 @@ async function renderResults(root: HTMLDivElement, data: any) {
       <div class="logo-dots"><span></span><span></span><span></span><span></span></div>
       <div>
         <div class="result-title">Esri Address Insights</div>
-        <div class="result-subtitle">${address} · ${summaryLabel}</div>
+        <div class="result-subtitle">${locationName} · ${summaryLabel}</div>
       </div>
     </div>
-    <div class="card-grid" id="card-grid"></div>
+    <div class="top-panel">
+      <div class="top-panel__left" id="top-panel-left"></div>
+      <div class="top-panel__right">
+        <div class="ai-card big-map-card" data-kind="teal">
+          <div class="ai-card__header">Catchment & POI map</div>
+          <div class="ai-card__body">
+            <div class="big-map" id="big-map"></div>
+          </div>
+        </div>
+      </div>
+    </div>
   `;
 
-  const grid = root.querySelector("#card-grid") as HTMLDivElement;
+  const leftCol = root.querySelector("#top-panel-left") as HTMLDivElement;
 
-  function addCard(kind: string, title: string, bodyHtml: string) {
+  function addLeftCard(kind: string, title: string, bodyHtml: string) {
     const card = document.createElement("div");
     card.className = "ai-card";
     card.dataset.kind = kind;
     card.innerHTML = `<div class="ai-card__header">${title}</div><div class="ai-card__body">${bodyHtml}</div>`;
-    grid.appendChild(card);
+    leftCol.appendChild(card);
     return card;
   }
 
   const sceneCard = document.createElement("div");
   sceneCard.className = "ai-card ai-card--scene";
   sceneCard.dataset.kind = "teal";
-  sceneCard.innerHTML = `<div class="ai-card__header">${rawAttributes.PlaceName || address}</div><div class="ai-card__scene"></div>`;
-  grid.appendChild(sceneCard);
+  sceneCard.innerHTML = `<div class="ai-card__header">${locationName}</div><div class="ai-card__scene"></div>`;
+  leftCol.appendChild(sceneCard);
 
   const sceneDiv = sceneCard.querySelector(".ai-card__scene") as HTMLDivElement;
   const sceneLayer = new GraphicsLayer();
@@ -638,82 +710,40 @@ async function renderResults(root: HTMLDivElement, data: any) {
   const basemapExpand = new Expand({ view: currentSceneView, content: basemapGallery, expandIcon: "basemap", expandTooltip: "Change basemap" });
   currentSceneView.ui.add(basemapExpand, "top-right");
 
-  addCard("teal", "Match quality", `
-    <div class="ai-card__label">Address type</div>
-    <div>${rawAttributes.Addr_type ?? "—"}</div>
-    <div class="ai-card__stat">${score.toFixed(2)}</div>
-    <div class="ai-card__stat-label">Match score</div>
-  `);
-
-  addCard("amber", "Elevation", elevation != null
+  addLeftCard("amber", "Elevation", elevation != null
     ? `<div class="ai-card__stat">${elevation.toFixed(1)} m</div><div class="ai-card__stat-label">Above sea level</div>`
     : `<div class="ai-card__stat-label">Unavailable — check the Elevation privilege on your API key.</div>`);
 
-  addCard("amber", "Terrain roughness", `
+  addLeftCard("amber", "Terrain roughness", `
     <div class="ai-card__stat">${roughness.toFixed(2)}</div>
     <div class="ai-card__stat-label">Std. dev. of nearby elevation samples (real, derived)</div>
   `);
 
-  for (const [category, pois] of Object.entries(poiByCategory)) {
-    const card = addCard("teal", category, `
-      <div class="ai-card__stat">${pois.length}</div>
-      <div class="ai-card__stat-label">Within ${primaryLabel}</div>
-      <div class="ai-card__minimap"></div>
-    `);
-    await createPoiMiniMap(card.querySelector(".ai-card__minimap")!, x, y, pois, primaryCatchment);
+  const walkSection = demographicsSections.find((s) => s.label.toLowerCase().includes("walk")) ?? demographicsSections[0];
+  const driveSection = demographicsSections.find((s) => s.label.toLowerCase().includes("drive")) ?? demographicsSections[1];
+
+  const bigMapDiv = root.querySelector("#big-map") as HTMLDivElement;
+  const legendContainer = document.createElement("div");
+  await createBigMap(bigMapDiv, legendContainer, x, y, walkSection, driveSection, poiByCategory);
+
+  if (demographicsSections.length < 2) {
+    console.error("Expected two demographic sections (walk + drive); got", demographicsSections.length);
   }
 
-  const routeCard = addCard("teal", "Route", `<div class="ai-card__minimap"></div><div class="ai-card__label" id="route-info" style="margin-top:8px">—</div>`);
-  const routeMinimapDiv = routeCard.querySelector(".ai-card__minimap") as HTMLDivElement;
-  const routeInfoDiv = routeCard.querySelector("#route-info") as HTMLDivElement;
+  const splitWrap = document.createElement("div");
+  splitWrap.className = "demo-split";
+  root.appendChild(splitWrap);
 
-  if (routeData && routeData.paths.length) {
-    const routeLayer = new GraphicsLayer();
-    routeLayer.add(new Graphic({ geometry: { type: "polyline", paths: routeData.paths, spatialReference: { wkid: 4326 } } as any, symbol: { type: "simple-line", color: "#0f6e56", width: 3 } as any }));
-    routeLayer.add(pointGraphic(x, y));
-    routeLayer.add(pointGraphic(destination.x, destination.y, "#378add"));
+  for (const section of demographicsSections) {
+    const col = document.createElement("div");
+    col.className = "demo-split__col";
+    const heading = document.createElement("div");
+    heading.className = "demo-split__heading";
+    heading.textContent = section.label;
+    col.appendChild(heading);
+    splitWrap.appendChild(col);
 
-    const routeView = new MapView({
-      container: routeMinimapDiv,
-      map: new Map({ basemap: "arcgis/streets", layers: [routeLayer] }),
-      constraints: { rotationEnabled: false },
-      ui: { components: ["attribution"] },
-    });
-    miniViews.push(routeView);
-    await routeView.when();
-    await routeView.goTo(routeLayer.graphics.toArray(), { animate: false });
-
-    routeInfoDiv.innerHTML = `
-      To: <b>${destination.label}</b><br>
-      ${routeData.distanceKm != null ? routeData.distanceKm.toFixed(1) + " km" : "—"} ·
-      ${routeData.minutes != null ? Math.round(routeData.minutes) + " min" : "—"}
-    `;
-  } else {
-    routeInfoDiv.textContent = "Route unavailable — check the Routing privilege on your API key.";
-  }
-
-  const demoCard = addCard("teal", "Demographics analysis area", `<div class="ai-card__minimap"></div><div class="ai-card__label" style="margin-top:8px">${primaryLabel}</div>`);
-  await createMiniMap(demoCard.querySelector(".ai-card__minimap")!, x, y, primaryCatchment);
-
-  if (demographicsSections.length === 1) {
-    const cards = buildDemographicCards(demographicsSections[0].enrichment);
-    await appendDemographicCards(grid, cards, x, y, demographicsSections[0].catchment);
-  } else {
-    const splitWrap = document.createElement("div");
-    splitWrap.className = "demo-split";
-    root.appendChild(splitWrap);
-
-    for (const section of demographicsSections) {
-      const col = document.createElement("div");
-      col.className = "demo-split__col";
-      const heading = document.createElement("div");
-      heading.className = "demo-split__heading";
-      heading.textContent = section.label;
-      col.appendChild(heading);
-      splitWrap.appendChild(col);
-
-      const cards = buildDemographicCards(section.enrichment);
-      await appendDemographicCards(col, cards, x, y, section.catchment);
-    }
+    const cards = buildDemographicCards(section.enrichment);
+    await appendDemographicCards(col, cards, x, y, section.catchment);
   }
 }
