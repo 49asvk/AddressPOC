@@ -1,7 +1,7 @@
 import { defineConfig } from "vite";
 
 export default defineConfig({
-  base: "/AddressInsights/",
+  base: "/AddressPOC/",
   server: {
     port: 5173,
   },
