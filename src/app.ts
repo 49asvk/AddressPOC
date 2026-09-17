@@ -15,6 +15,9 @@ import { solveServiceAreaCatchment } from "./services/serviceArea";
 import type { Catchment } from "./services/catchment";
 import { ENRICHMENT_COLLECTIONS, type EnrichmentCollection } from "./data/enrichmentVariables";
 import { POC_LOCATIONS, type PocLocation } from "./data/locations";
+import LocalBasemapsSource from "@arcgis/core/widgets/BasemapGallery/support/LocalBasemapsSource";
+import Basemap from "@arcgis/core/Basemap";
+
 
 let currentSceneView: SceneView | null = null;
 let currentBigMapView: MapView | null = null;
@@ -344,10 +347,12 @@ function formatFieldValue(raw: any, unit?: "currency") {
   return unit === "currency" ? `₹${formatCompact(raw)}` : formatCompact(raw);
 }
 
-function pointGraphic(x: number, y: number, color = "#d85a30") {
+function pointGraphic(x: number, y: number, color = "#d85a30", attributes?: Record<string, any>, popupTemplate?: __esri.PopupTemplateProperties) {
   return new Graphic({
     geometry: { type: "point", x, y, spatialReference: { wkid: 4326 } } as any,
     symbol: { type: "simple-marker", color, outline: { color: "#ffffff", width: 1 }, size: 10 } as any,
+    attributes,
+    popupTemplate: popupTemplate as any,
   });
 }
 
@@ -417,7 +422,7 @@ async function createBigMap(
   const poiLayers = Object.entries(poiByCategory).map(([category, pois]) => {
     const layer = new GraphicsLayer({ title: category });
     const color = categoryColor(category);
-    pois.forEach((p) => layer.add(pointGraphic(p.x, p.y, color)));
+    pois.forEach((p) => layer.add(pointGraphic(p.x, p.y, color, { name: p.name, category: p.category }, { title: "{name}", content: "Category: {category}" })));
     return layer;
   });
 
@@ -437,17 +442,38 @@ async function createBigMap(
   const fullscreen = new Fullscreen({ view });
   view.ui.add(fullscreen, "top-right");
 
-  // Basemap toggle -- same Expand + BasemapGallery pattern as the 3D scene card
-  const basemapGallery = new BasemapGallery({ view });
+  const basemapGallery = new BasemapGallery({
+    view,
+    source: new LocalBasemapsSource({
+      basemaps: [
+        Basemap.fromId("arcgis/streets"),
+        Basemap.fromId("arcgis/imagery"),
+        Basemap.fromId("arcgis/topographic"),
+        Basemap.fromId("arcgis/navigation"),
+        Basemap.fromId("arcgis/dark-gray"),
+        Basemap.fromId("arcgis/light-gray"),
+        Basemap.fromId("arcgis/oceans"),
+      ],
+    }),
+  });
   const basemapExpand = new Expand({ view, content: basemapGallery, expandIcon: "basemap", expandTooltip: "Change basemap" });
   view.ui.add(basemapExpand, "top-right");
-  
-  // Measure tool -- one widget with its own built-in distance/area switcher
+
   const measurement = new Measurement({ view });
-  const measurementExpand = new Expand({ view, content: measurement, expandIcon: "measure-line", expandTooltip: "Measure" });
-  measurementExpand.watch("expanded", (expanded: boolean) => {
-    if (!expanded) measurement.clear();
-  });
+  const measurePanel = document.createElement("div");
+  measurePanel.className = "measure-panel";
+  measurePanel.innerHTML = `
+    <div class="measure-panel__row">
+      <calcite-button id="measure-distance-btn" scale="s">Distance</calcite-button>
+      <calcite-button id="measure-area-btn" scale="s">Area</calcite-button>
+      <calcite-button id="measure-clear-btn" scale="s" appearance="outline">Clear</calcite-button>
+    </div>
+  `;
+  measurePanel.querySelector("#measure-distance-btn")!.addEventListener("click", () => { measurement.activeTool = "distance"; });
+  measurePanel.querySelector("#measure-area-btn")!.addEventListener("click", () => { measurement.activeTool = "area"; });
+  measurePanel.querySelector("#measure-clear-btn")!.addEventListener("click", () => { measurement.clear(); });
+  const measurementExpand = new Expand({ view, content: measurePanel, expandIcon: "measure-line", expandTooltip: "Measure" });
+  measurementExpand.watch("expanded", (expanded: boolean) => { if (!expanded) measurement.clear(); });
   view.ui.add(measurementExpand, "top-right");
 
   // Legend + per-layer visibility toggles -- a custom panel rather than
@@ -532,9 +558,9 @@ function buildAgePyramid(enrichment: Record<string, any>): string | null {
       <div class="pyramid-legend"><span class="pyramid-swatch pyramid-swatch--m"></span>Male<span class="pyramid-swatch pyramid-swatch--f" style="margin-left:14px"></span>Female</div>
       ${brackets.map((b) => `
         <div class="pyramid-row">
-          <div class="pyramid-row__side pyramid-row__side--m"><div class="pyramid-row__fill pyramid-row__fill--m" style="width:${(b.m / max) * 100}%"></div></div>
+          <div class="pyramid-row__side pyramid-row__side--m" title="Male, ${b.label}: ${formatInt(b.m)}"><div class="pyramid-row__fill pyramid-row__fill--m" style="width:${(b.m / max) * 100}%"></div></div>
           <div class="pyramid-row__label">${b.label}</div>
-          <div class="pyramid-row__side pyramid-row__side--f"><div class="pyramid-row__fill pyramid-row__fill--f" style="width:${(b.f / max) * 100}%"></div></div>
+          <div class="pyramid-row__side pyramid-row__side--f" title="Female, ${b.label}: ${formatInt(b.f)}"><div class="pyramid-row__fill pyramid-row__fill--f" style="width:${(b.f / max) * 100}%"></div></div>
         </div>
       `).join("")}
     `;
@@ -570,7 +596,12 @@ function buildConsumerStylesDonut(enrichment: Record<string, any>): string | nul
   return `
     <div class="donut-chart" style="background: conic-gradient(${stops});"></div>
     <div class="donut-legend">
-      ${entries.map((e, i) => `<div class="donut-legend__row"><span class="donut-legend__swatch" style="background:${DONUT_COLORS[i % DONUT_COLORS.length]}"></span>${e.label} — ${((e.value / total) * 100).toFixed(0)}%</div>`).join("")}
+      ${entries.map((e, i) => `
+        <div class="donut-legend__row">
+          <span class="donut-legend__label"><span class="donut-legend__swatch" style="background:${DONUT_COLORS[i % DONUT_COLORS.length]}"></span>${e.label}</span>
+          <span class="donut-legend__value">${formatInt(e.value)} · ${((e.value / total) * 100).toFixed(0)}%</span>
+        </div>
+      `).join("")}
     </div>
   `;
 }
@@ -703,8 +734,13 @@ async function renderResults(root: HTMLDivElement, data: any) {
   leftCol.appendChild(sceneCard);
 
   const sceneDiv = sceneCard.querySelector(".ai-card__scene") as HTMLDivElement;
+  if (!Number.isFinite(x) || !Number.isFinite(y)) {
+    console.error("Scene view: invalid coordinates for", locationName, "-- check that entry in src/data/locations.ts", { x, y });
+  }
+
+  const centerGraphic = pointGraphic(x, y);
   const sceneLayer = new GraphicsLayer();
-  sceneLayer.add(pointGraphic(x, y));
+  sceneLayer.add(centerGraphic);
   currentSceneView = new SceneView({
     container: sceneDiv,
     map: new Map({ basemap: "arcgis/imagery", ground: "world-elevation", layers: [sceneLayer] }),
@@ -712,11 +748,7 @@ async function renderResults(root: HTMLDivElement, data: any) {
   });
   await currentSceneView.when();
   await currentSceneView.goTo(
-    {
-      target: { type: "point", x, y, spatialReference: { wkid: 4326 } } as any,
-      scale: 2000,
-      tilt: 60,
-    },
+    { target: centerGraphic.geometry, scale: 2000, tilt: 60 },
     { animate: false }
   );  
 
