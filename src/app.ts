@@ -624,7 +624,9 @@ function buildAgePyramid(enrichment: Record<string, any>): string | null {
   return `${pyramidHtml}${extraRows}`;
 }
 
-function buildConsumerStylesDonut(enrichment: Record<string, any>): string | null {
+let donutInstanceCounter = 0;
+
+function buildConsumerStylesDonut(enrichment: Record<string, any>): { body: string; wire: (card: HTMLElement) => void } | null {
   const codes = Object.keys(consumerStylesLabels).filter((c) => c in enrichment);
   if (codes.length < 2) return null;
   const entries = codes
@@ -632,27 +634,72 @@ function buildConsumerStylesDonut(enrichment: Record<string, any>): string | nul
     .sort((a, b) => b.value - a.value);
   const total = entries.reduce((s, e) => s + e.value, 0) || 1;
 
-  let cumulative = 0;
-  const stops = entries
-    .map((e, i) => {
-      const startPct = (cumulative / total) * 100;
-      cumulative += e.value;
-      const endPct = (cumulative / total) * 100;
-      return `${DONUT_COLORS[i % DONUT_COLORS.length]} ${startPct}% ${endPct}%`;
-    })
-    .join(", ");
+  // Unique per card instance -- both catchment columns render a
+  // "Lifestyle segmentation" card at once, so IDs can't collide.
+  const uid = `donut-${donutInstanceCounter++}`;
 
-  return `
-    <div class="donut-chart" style="background: conic-gradient(${stops});"></div>
-    <div class="donut-legend">
-      ${entries.map((e, i) => `
-        <div class="donut-legend__row">
-          <span class="donut-legend__label"><span class="donut-legend__swatch" style="background:${DONUT_COLORS[i % DONUT_COLORS.length]}"></span>${e.label}</span>
-          <span class="donut-legend__value">${formatInt(e.value)} · ${((e.value / total) * 100).toFixed(0)}%</span>
-        </div>
-      `).join("")}
+  const rowsHtml = entries
+    .map((e, i) => {
+      const color = DONUT_COLORS[i % DONUT_COLORS.length];
+      const pct = ((e.value / total) * 100).toFixed(0);
+      return `
+        <label class="donut-legend__row">
+          <input type="checkbox" class="donut-legend__checkbox" data-value="${e.value}" data-color="${color}" checked>
+          <span class="donut-legend__label"><span class="donut-legend__swatch" style="background:${color}"></span>${e.label}</span>
+          <span class="donut-legend__value">${formatInt(e.value)} · ${pct}%</span>
+        </label>
+      `;
+    })
+    .join("");
+
+  const body = `
+    <div class="donut-chart" data-donut-chart="${uid}"></div>
+    <div class="donut-legend" data-donut-legend="${uid}">
+      ${rowsHtml}
+      <div class="donut-legend__row donut-legend__row--total">
+        <span class="donut-legend__label">Total (selected)</span>
+        <span class="donut-legend__value" data-donut-total="${uid}">${formatInt(total)}</span>
+      </div>
     </div>
   `;
+
+  function wire(card: HTMLElement) {
+    const chartDiv = card.querySelector<HTMLElement>(`[data-donut-chart="${uid}"]`);
+    const totalSpan = card.querySelector<HTMLElement>(`[data-donut-total="${uid}"]`);
+    const checkboxes = Array.from(
+      card.querySelectorAll<HTMLInputElement>(`[data-donut-legend="${uid}"] .donut-legend__checkbox`)
+    );
+
+    function recompute() {
+      const checked = checkboxes.filter((cb) => cb.checked);
+      const sum = checked.reduce((s, cb) => s + Number(cb.dataset.value), 0);
+      if (totalSpan) totalSpan.textContent = formatInt(sum);
+      if (!chartDiv) return;
+      if (sum === 0) {
+        chartDiv.style.background = "#eee";
+        return;
+      }
+      // Re-normalized to the checked subset -- the ring always fills
+      // to show how the selected segments compare to each other,
+      // rather than shrinking to leave an empty gap for the rest.
+      let cumulative = 0;
+      const stops = checked
+        .map((cb) => {
+          const v = Number(cb.dataset.value);
+          const startPct = (cumulative / sum) * 100;
+          cumulative += v;
+          const endPct = (cumulative / sum) * 100;
+          return `${cb.dataset.color} ${startPct}% ${endPct}%`;
+        })
+        .join(", ");
+      chartDiv.style.background = `conic-gradient(${stops})`;
+    }
+
+    checkboxes.forEach((cb) => cb.addEventListener("change", recompute));
+    recompute();
+  }
+
+  return { body, wire };
 }
 
 function buildGenericCollectionCard(collection: EnrichmentCollection, enrichment: Record<string, any>): { body: string } | null {
@@ -671,7 +718,7 @@ function buildGenericCollectionCard(collection: EnrichmentCollection, enrichment
   return { body: heroHtml + restHtml };
 }
 
-function buildDemographicCards(enrichment: Record<string, any> | null): { kind: string; title: string; body: string }[] {
+function buildDemographicCards(enrichment: Record<string, any> | null): { kind: string; title: string; body: string; wire?: (card: HTMLElement) => void }[] {
   if (!enrichment) {
     return [{
       kind: "teal",
@@ -680,13 +727,13 @@ function buildDemographicCards(enrichment: Record<string, any> | null): { kind: 
     }];
   }
 
-  const cards: { kind: string; title: string; body: string }[] = [];
+  const cards: { kind: string; title: string; body: string; wire?: (card: HTMLElement) => void }[] = [];
 
   const popHtml = buildNearbyPopulation(enrichment);
   if (popHtml) cards.push({ kind: "teal", title: "Population analysis", body: popHtml });
 
-  const donutHtml = buildConsumerStylesDonut(enrichment);
-  if (donutHtml) cards.push({ kind: "purple", title: "Lifestyle segmentation", body: donutHtml });
+  const donut = buildConsumerStylesDonut(enrichment);
+  if (donut) cards.push({ kind: "purple", title: "Lifestyle segmentation", body: donut.body, wire: donut.wire });
 
   const pyramidHtml = buildAgePyramid(enrichment);
   if (pyramidHtml) cards.push({ kind: "teal", title: "Age-group segmentation", body: pyramidHtml });
@@ -709,7 +756,7 @@ function buildDemographicCards(enrichment: Record<string, any> | null): { kind: 
 
 async function appendDemographicCards(
   container: HTMLElement,
-  cards: { kind: string; title: string; body: string }[],
+  cards: { kind: string; title: string; body: string; wire?: (card: HTMLElement) => void }[],
   x: number,
   y: number,
   catchment: Catchment
@@ -723,6 +770,8 @@ async function appendDemographicCards(
 
     const minimap = card.querySelector(".ai-card__minimap");
     if (minimap) await createMiniMap(minimap as HTMLDivElement, x, y, catchment);
+
+    c.wire?.(card);
   }
 }
 

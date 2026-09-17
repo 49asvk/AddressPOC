@@ -141,8 +141,10 @@ body { margin: 0; font-family: system-ui, sans-serif; background: #f4f3ef; }
 .measure-panel { padding: 8px; }
 .measure-panel__row { display: flex; gap: 6px; }
 
-.donut-chart { width: 110px; height: 110px; border-radius: 50%; margin: 4px auto 12px; }
-.donut-legend__row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 3px 0; font-size: 12px; }
-.donut-legend__label { display: flex; align-items: center; gap: 6px; }
+.donut-chart { width: 110px; height: 110px; border-radius: 50%; margin: 4px auto 12px; background: #eee; }
+.donut-legend__row { display: flex; align-items: center; gap: 8px; padding: 4px 0; font-size: 12px; cursor: pointer; }
+.donut-legend__row input[type="checkbox"] { margin: 0; flex-shrink: 0; }
+.donut-legend__label { display: flex; align-items: center; gap: 6px; flex: 1; }
 .donut-legend__swatch { display: inline-block; width: 9px; height: 9px; border-radius: 2px; flex-shrink: 0; }
 .donut-legend__value { font-weight: 600; white-space: nowrap; color: #333; }
+.donut-legend__row--total { cursor: default; border-top: 1px solid #ddd; margin-top: 4px; padding-top: 8px; font-weight: 700; }
