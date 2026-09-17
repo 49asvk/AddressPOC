@@ -6,6 +6,7 @@ import Graphic from "@arcgis/core/Graphic";
 import Circle from "@arcgis/core/geometry/Circle";
 import BasemapGallery from "@arcgis/core/widgets/BasemapGallery";
 import Fullscreen from "@arcgis/core/widgets/Fullscreen";
+import Measurement from "@arcgis/core/widgets/Measurement";
 import Expand from "@arcgis/core/widgets/Expand";
 import { enrichPoint } from "./services/geoenrichment";
 import { sampleElevation } from "./services/elevation";
@@ -440,6 +441,14 @@ async function createBigMap(
   const basemapGallery = new BasemapGallery({ view });
   const basemapExpand = new Expand({ view, content: basemapGallery, expandIcon: "basemap", expandTooltip: "Change basemap" });
   view.ui.add(basemapExpand, "top-right");
+  
+  // Measure tool -- one widget with its own built-in distance/area switcher
+  const measurement = new Measurement({ view });
+  const measurementExpand = new Expand({ view, content: measurement, expandIcon: "measure-line", expandTooltip: "Measure" });
+  measurementExpand.watch("expanded", (expanded: boolean) => {
+    if (!expanded) measurement.clear();
+  });
+  view.ui.add(measurementExpand, "top-right");
 
   // Legend + per-layer visibility toggles -- a custom panel rather than
   // the built-in Legend widget, since that widget only reads renderers
@@ -698,13 +707,18 @@ async function renderResults(root: HTMLDivElement, data: any) {
   sceneLayer.add(pointGraphic(x, y));
   currentSceneView = new SceneView({
     container: sceneDiv,
-    map: new Map({ basemap: "arcgis/topographic", ground: "world-elevation", layers: [sceneLayer] }),
-    center: [x, y],
-    zoom: 17,
+    map: new Map({ basemap: "arcgis/imagery", ground: "world-elevation", layers: [sceneLayer] }),
     ui: { components: ["attribution"] },
   });
   await currentSceneView.when();
-  currentSceneView.goTo({ tilt: 45 }, { animate: false });
+  await currentSceneView.goTo(
+    {
+      target: { type: "point", x, y, spatialReference: { wkid: 4326 } } as any,
+      scale: 2000,
+      tilt: 60,
+    },
+    { animate: false }
+  );  
 
   const basemapGallery = new BasemapGallery({ view: currentSceneView });
   const basemapExpand = new Expand({ view: currentSceneView, content: basemapGallery, expandIcon: "basemap", expandTooltip: "Change basemap" });

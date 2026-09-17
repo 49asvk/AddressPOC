@@ -1,4 +1,5 @@
 import esriConfig from "@arcgis/core/config";
+import "@arcgis/core/assets/esri/themes/light/main.css";
 import "./style.css";
 import { ARCGIS_API_KEY } from "./config";
 import { renderApp } from "./app";
