@@ -16,7 +16,7 @@ const travelModeCache = new Map<TravelModeName, any>();
 async function getTravelMode(name: TravelModeName) {
   if (travelModeCache.has(name)) return travelModeCache.get(name);
   const description = await networkService.fetchServiceDescription(SERVICE_AREA_URL);
-  const mode = description.supportedTravelModes.find((m: any) => m.name === name);
+  const mode = description.supportedTravelModes?.find((m: any) => m.name === name);
   if (!mode) throw new Error(`Travel mode "${name}" not found in this service's supported modes.`);
   travelModeCache.set(name, mode);
   return mode;

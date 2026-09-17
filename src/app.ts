@@ -5,6 +5,8 @@ import GraphicsLayer from "@arcgis/core/layers/GraphicsLayer";
 import Graphic from "@arcgis/core/Graphic";
 import Circle from "@arcgis/core/geometry/Circle";
 import BasemapGallery from "@arcgis/core/widgets/BasemapGallery";
+import LocalBasemapsSource from "@arcgis/core/widgets/BasemapGallery/support/LocalBasemapsSource";
+import Basemap from "@arcgis/core/Basemap";
 import Fullscreen from "@arcgis/core/widgets/Fullscreen";
 import Measurement from "@arcgis/core/widgets/Measurement";
 import Expand from "@arcgis/core/widgets/Expand";
@@ -15,9 +17,6 @@ import { solveServiceAreaCatchment } from "./services/serviceArea";
 import type { Catchment } from "./services/catchment";
 import { ENRICHMENT_COLLECTIONS, type EnrichmentCollection } from "./data/enrichmentVariables";
 import { POC_LOCATIONS, type PocLocation } from "./data/locations";
-import LocalBasemapsSource from "@arcgis/core/widgets/BasemapGallery/support/LocalBasemapsSource";
-import Basemap from "@arcgis/core/Basemap";
-
 
 let currentSceneView: SceneView | null = null;
 let currentBigMapView: MapView | null = null;
@@ -347,7 +346,13 @@ function formatFieldValue(raw: any, unit?: "currency") {
   return unit === "currency" ? `₹${formatCompact(raw)}` : formatCompact(raw);
 }
 
-function pointGraphic(x: number, y: number, color = "#d85a30", attributes?: Record<string, any>, popupTemplate?: __esri.PopupTemplateProperties) {
+function pointGraphic(
+  x: number,
+  y: number,
+  color = "#d85a30",
+  attributes?: Record<string, any>,
+  popupTemplate?: __esri.PopupTemplateProperties
+) {
   return new Graphic({
     geometry: { type: "point", x, y, spatialReference: { wkid: 4326 } } as any,
     symbol: { type: "simple-marker", color, outline: { color: "#ffffff", width: 1 }, size: 10 } as any,
@@ -422,7 +427,14 @@ async function createBigMap(
   const poiLayers = Object.entries(poiByCategory).map(([category, pois]) => {
     const layer = new GraphicsLayer({ title: category });
     const color = categoryColor(category);
-    pois.forEach((p) => layer.add(pointGraphic(p.x, p.y, color, { name: p.name, category: p.category }, { title: "{name}", content: "Category: {category}" })));
+    pois.forEach((p) =>
+      layer.add(
+        pointGraphic(p.x, p.y, color, { name: p.name, category: p.category }, {
+          title: "{name}",
+          content: "Category: {category}",
+        })
+      )
+    );
     return layer;
   });
 
@@ -439,70 +451,107 @@ async function createBigMap(
   await view.goTo(fitGraphics, { animate: false }).catch(() => {});
 
   // Fullscreen toggle
-  const fullscreen = new Fullscreen({ view });
-  view.ui.add(fullscreen, "top-right");
+  try {
+    const fullscreen = new Fullscreen({ view });
+    view.ui.add(fullscreen, "top-right");
+  } catch (err) {
+    console.error("Fullscreen widget failed to initialize:", err);
+  }
 
-  const basemapGallery = new BasemapGallery({
-    view,
-    source: new LocalBasemapsSource({
-      basemaps: [
-        Basemap.fromId("arcgis/streets"),
-        Basemap.fromId("arcgis/imagery"),
-        Basemap.fromId("arcgis/topographic"),
-        Basemap.fromId("arcgis/navigation"),
-        Basemap.fromId("arcgis/dark-gray"),
-        Basemap.fromId("arcgis/light-gray"),
-        Basemap.fromId("arcgis/oceans"),
-      ],
-    }),
-  });
-  const basemapExpand = new Expand({ view, content: basemapGallery, expandIcon: "basemap", expandTooltip: "Change basemap" });
-  view.ui.add(basemapExpand, "top-right");
+  // Basemap toggle -- same Expand pattern as the 3D scene card, but with
+  // an explicit, fixed basemap list rather than the gallery's default
+  // auto-discovered source, so it's always the same list and always
+  // re-selectable. Basemap.fromId() only recognizes the legacy keyword
+  // ids ("streets", "topo", "satellite"...) -- for the newer
+  // "arcgis/xxx" basemap-styles ids used everywhere else in this app,
+  // it returns undefined, which is what broke this. The style-object
+  // constructor is the correct way to build a Basemap from those ids.
+  try {
+    const basemapGallery = new BasemapGallery({
+      view,
+      source: new LocalBasemapsSource({
+        basemaps: [
+          new Basemap({ style: { id: "arcgis/streets" } }),
+          new Basemap({ style: { id: "arcgis/imagery" } }),
+          new Basemap({ style: { id: "arcgis/topographic" } }),
+          new Basemap({ style: { id: "arcgis/navigation" } }),
+          new Basemap({ style: { id: "arcgis/dark-gray" } }),
+          new Basemap({ style: { id: "arcgis/light-gray" } }),
+          new Basemap({ style: { id: "arcgis/oceans" } }),
+        ],
+      }),
+    });
+    const basemapExpand = new Expand({ view, content: basemapGallery, expandIcon: "basemap", expandTooltip: "Change basemap" });
+    view.ui.add(basemapExpand, "top-right");
+  } catch (err) {
+    console.error("Basemap gallery failed to initialize:", err);
+  }
 
-  const measurement = new Measurement({ view });
-  const measurePanel = document.createElement("div");
-  measurePanel.className = "measure-panel";
-  measurePanel.innerHTML = `
-    <div class="measure-panel__row">
-      <calcite-button id="measure-distance-btn" scale="s">Distance</calcite-button>
-      <calcite-button id="measure-area-btn" scale="s">Area</calcite-button>
-      <calcite-button id="measure-clear-btn" scale="s" appearance="outline">Clear</calcite-button>
-    </div>
-  `;
-  measurePanel.querySelector("#measure-distance-btn")!.addEventListener("click", () => { measurement.activeTool = "distance"; });
-  measurePanel.querySelector("#measure-area-btn")!.addEventListener("click", () => { measurement.activeTool = "area"; });
-  measurePanel.querySelector("#measure-clear-btn")!.addEventListener("click", () => { measurement.clear(); });
-  const measurementExpand = new Expand({ view, content: measurePanel, expandIcon: "measure-line", expandTooltip: "Measure" });
-  measurementExpand.watch("expanded", (expanded: boolean) => { if (!expanded) measurement.clear(); });
-  view.ui.add(measurementExpand, "top-right");
+  // Measure tool -- driven by our own buttons rather than the
+  // Measurement widget's own built-in UI, since that built-in UI needs
+  // its container actually mounted in the page to wire up clicks. This
+  // way the widget only ever has to do the measuring itself.
+  try {
+    const measurement = new Measurement({ view });
+    const measurePanel = document.createElement("div");
+    measurePanel.className = "measure-panel";
+    measurePanel.innerHTML = `
+      <div class="measure-panel__row">
+        <calcite-button id="measure-distance-btn" scale="s">Distance</calcite-button>
+        <calcite-button id="measure-area-btn" scale="s">Area</calcite-button>
+        <calcite-button id="measure-clear-btn" scale="s" appearance="outline">Clear</calcite-button>
+      </div>
+    `;
+    measurePanel.querySelector("#measure-distance-btn")!.addEventListener("click", () => {
+      measurement.activeTool = "distance";
+    });
+    measurePanel.querySelector("#measure-area-btn")!.addEventListener("click", () => {
+      measurement.activeTool = "area";
+    });
+    measurePanel.querySelector("#measure-clear-btn")!.addEventListener("click", () => {
+      measurement.clear();
+    });
+    const measurementExpand = new Expand({ view, content: measurePanel, expandIcon: "measure-line", expandTooltip: "Measure" });
+    measurementExpand.watch("expanded", (expanded: boolean) => {
+      if (!expanded) measurement.clear();
+    });
+    view.ui.add(measurementExpand, "top-right");
+  } catch (err) {
+    console.error("Measurement widget failed to initialize:", err);
+  }
 
   // Legend + per-layer visibility toggles -- a custom panel rather than
   // the built-in Legend widget, since that widget only reads renderers
   // off FeatureLayers and these are plain GraphicsLayers.
-  const legendRows = [
-    { title: driveLayer.title as string, color: "#378add", layer: driveLayer as GraphicsLayer },
-    { title: walkLayer.title as string, color: "#0f6e56", layer: walkLayer as GraphicsLayer },
-    ...poiLayers.map((l) => ({ title: l.title as string, color: categoryColor(l.title as string), layer: l as GraphicsLayer })),
-  ];
-  legendContainer.innerHTML = `
-    <div class="map-legend-panel">
-      ${legendRows.map((r, i) => `
-        <label class="fake-legend__row">
-          <input type="checkbox" class="map-legend__toggle" data-layer-index="${i}" checked>
-          <span class="fake-legend__swatch" style="background:${r.color}"></span>
-          ${r.title}
-        </label>
-      `).join("")}
-    </div>
-  `;
-  legendContainer.querySelectorAll<HTMLInputElement>(".map-legend__toggle").forEach((cb) => {
-    cb.addEventListener("change", () => {
-      const idx = Number(cb.dataset.layerIndex);
-      legendRows[idx].layer.visible = cb.checked;
+  try {
+    const legendRows = [
+      { title: driveLayer.title as string, color: "#378add", layer: driveLayer as GraphicsLayer },
+      { title: walkLayer.title as string, color: "#0f6e56", layer: walkLayer as GraphicsLayer },
+      ...poiLayers.map((l) => ({ title: l.title as string, color: categoryColor(l.title as string), layer: l as GraphicsLayer })),
+    ];
+    legendContainer.innerHTML = `
+      <div class="map-legend-panel">
+        ${legendRows.map((r, i) => `
+          <label class="fake-legend__row">
+            <input type="checkbox" class="map-legend__toggle" data-layer-index="${i}" checked>
+            <span class="fake-legend__swatch" style="background:${r.color}"></span>
+            ${r.title}
+          </label>
+        `).join("")}
+      </div>
+    `;
+    legendContainer.querySelectorAll<HTMLInputElement>(".map-legend__toggle").forEach((cb) => {
+      cb.addEventListener("change", () => {
+        const idx = Number(cb.dataset.layerIndex);
+        legendRows[idx].layer.visible = cb.checked;
+      });
     });
-  });
-  const legendExpand = new Expand({ view, content: legendContainer, expandIcon: "legend", expandTooltip: "Legend & layers", expanded: true });
-  view.ui.add(legendExpand, "top-left");
+    const legendExpand = new Expand({ view, content: legendContainer, expandIcon: "legend", expandTooltip: "Legend & layers", expanded: true });
+    view.ui.add(legendExpand, "top-left");
+  } catch (err) {
+    console.error("Legend panel failed to initialize:", err);
+  }
+
 
   return view;
 }
@@ -747,10 +796,18 @@ async function renderResults(root: HTMLDivElement, data: any) {
     ui: { components: ["attribution"] },
   });
   await currentSceneView.when();
+  // Setting center/zoom in the constructor computes the camera before
+  // the 3D terrain has loaded, against a flat ellipsoid -- once real
+  // elevation loads in, that camera can end up looking at empty sky or
+  // buried in terrain, and a later tilt just pivots around that wrong
+  // position. Reusing the marker's own geometry as the goTo target,
+  // after the view (and its ground) is ready, keeps it centered
+  // regardless of terrain -- and guarantees the target matches the dot
+  // exactly, rather than a second, separately-typed point literal.
   await currentSceneView.goTo(
     { target: centerGraphic.geometry, scale: 2000, tilt: 60 },
     { animate: false }
-  );  
+  );
 
   const basemapGallery = new BasemapGallery({ view: currentSceneView });
   const basemapExpand = new Expand({ view: currentSceneView, content: basemapGallery, expandIcon: "basemap", expandTooltip: "Change basemap" });
