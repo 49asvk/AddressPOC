@@ -2,7 +2,7 @@ import Query from "@arcgis/core/rest/support/Query";
 import * as query from "@arcgis/core/rest/query";
 import type { Catchment } from "./catchment";
 
-export const POI_LAYER_URL = "https://services8.arcgis.com/S3JihvJw7nZLbh8R/arcgis/rest/services/IndiaBA_POIs/FeatureServer/0";
+export const POI_LAYER_URL = "https://services7.arcgis.com/8phUg7DrlXpKgLyA/arcgis/rest/services/KPN_POIs_15min/FeatureServer/0";
 
 const CATEGORY_FIELD = "ESRI_IND_1";
 
