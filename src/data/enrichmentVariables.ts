@@ -24,7 +24,7 @@ export const ENRICHMENT_COLLECTIONS: EnrichmentCollection[] = [
       { id: "POPDENS_CY", label: "2024 Population Density (per km²)" },
       { id: "MALES_CY", label: "2024 Total Male Population" },
       { id: "FEMALES_CY", label: "2024 Total Female Population" },
-      { id: "TOT_P_2026", label: "2026 Total Population" },
+      { id: "TOT_P_2026", label: "2026 Total Projected Population" },
       { id: "TOT_M_2026", label: "2026 Male Population" },
       { id: "TOT_F_2026", label: "2026 Female Population" },
       // All 2011-vintage fields removed per your instruction -- no 2011

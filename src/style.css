@@ -49,7 +49,12 @@ body { margin: 0; font-family: system-ui, sans-serif; background: #f4f3ef; }
 .big-map { position: absolute; inset: 0; }
 
 .poi-swatch { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin: 0 2px; }
-.poi-count-card { margin: 0 var(--ai-gap) var(--ai-gap); }
+/* .ai-card sets width:100% (content-box), so adding left/right margin on
+   top of that pushes this card wider than its parent and triggers a
+   horizontal scrollbar -- box-sizing: border-box + a calc'd width keeps
+   the margins inside the 100%, and the extra specificity (two classes)
+   guarantees this wins over .ai-card's plain width:100%. */
+.ai-card.poi-count-card { box-sizing: border-box; width: calc(100% - (2 * var(--ai-gap))); margin: 0 var(--ai-gap) var(--ai-gap); }
 .poi-count-table { width: 100%; border-collapse: collapse; font-size: 13px; }
 .poi-count-table th { text-align: left; padding: 6px 10px; color: #666; font-weight: 600; font-size: 12px; border-bottom: 2px solid #e2e2e2; }
 .poi-count-table td { padding: 6px 10px; border-bottom: 1px solid #f0f0f0; }
@@ -79,6 +84,8 @@ body { margin: 0; font-family: system-ui, sans-serif; background: #f4f3ef; }
 .ai-card__stat { font-size: 28px; font-weight: 700; margin-top: 4px; }
 .ai-card__stat-label, .ai-card__label { font-size: 12px; color: #666; }
 .ai-card__row { display: flex; justify-content: space-between; padding: 4px 0; border-bottom: 1px solid #f0f0f0; }
+.ai-card__subheading { font-size: 12px; font-weight: 700; color: #666; text-transform: uppercase; letter-spacing: 0.02em; margin: 14px 0 6px; padding-top: 10px; border-top: 1px solid #eee; }
+
 
 .ai-card__json {
   font-family: monospace; font-size: 11px; max-height: 220px; overflow: auto;
@@ -98,7 +105,7 @@ body { margin: 0; font-family: system-ui, sans-serif; background: #f4f3ef; }
   border-radius: 50% 50% 50% 0; background: #d85a30;
   transform: translate(-50%, -100%) rotate(-45deg);
 } */
-.ai-card__minimap { margin-top: 10px; height: 150px; border-radius: 6px; overflow: hidden; }
+.ai-card__minimap { margin-top: 10px; height: 280px; border-radius: 6px; overflow: hidden; }
 
 .survey-bar { display: flex; height: 18px; border-radius: 4px; overflow: hidden; }
 

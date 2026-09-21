@@ -9,6 +9,7 @@ import Circle from "@arcgis/core/geometry/Circle";
 import Polygon from "@arcgis/core/geometry/Polygon";
 import Point from "@arcgis/core/geometry/Point";
 import CIMSymbol from "@arcgis/core/symbols/CIMSymbol";
+import * as symbolUtils from "@arcgis/core/symbols/support/symbolUtils";
 import * as geometryEngine from "@arcgis/core/geometry/geometryEngine";
 import BasemapGallery from "@arcgis/core/widgets/BasemapGallery";
 import LocalBasemapsSource from "@arcgis/core/widgets/BasemapGallery/support/LocalBasemapsSource";
@@ -122,7 +123,28 @@ function kpnStoreCimSymbol(): CIMSymbol {
       type: "CIMSymbolReference",
       symbol: {
         type: "CIMPointSymbol",
+        // CIM stacks symbolLayers with the FIRST entry on TOP (opposite of
+        // CSS/SVG's last-child-on-top rule) -- the dot must be listed
+        // before the pin body, or the opaque pin paints over it and it
+        // never appears at all, which is exactly what was happening.
         symbolLayers: [
+          {
+            // Yellow dot nested near the top of the pin.
+            type: "CIMVectorMarker",
+            enable: true,
+            size: 34,
+            frame: KPN_PIN_FRAME,
+            markerGraphics: [
+              {
+                type: "CIMMarkerGraphic",
+                geometry: { rings: [KPN_DOT_RING] },
+                symbol: {
+                  type: "CIMPolygonSymbol",
+                  symbolLayers: [{ type: "CIMSolidFill", enable: true, color: [255, 214, 0, 255] }],
+                },
+              },
+            ],
+          },
           {
             // Pin body -- yellow-green fill, semi-transparent black stroke.
             type: "CIMVectorMarker",
@@ -139,23 +161,6 @@ function kpnStoreCimSymbol(): CIMSymbol {
                     { type: "CIMSolidStroke", enable: true, color: [0, 0, 0, 140], width: 1 },
                     { type: "CIMSolidFill", enable: true, color: [186, 218, 85, 255] },
                   ],
-                },
-              },
-            ],
-          },
-          {
-            // White dot nested near the top of the pin.
-            type: "CIMVectorMarker",
-            enable: true,
-            size: 34,
-            frame: KPN_PIN_FRAME,
-            markerGraphics: [
-              {
-                type: "CIMMarkerGraphic",
-                geometry: { rings: [KPN_DOT_RING] },
-                symbol: {
-                  type: "CIMPolygonSymbol",
-                  symbolLayers: [{ type: "CIMSolidFill", enable: true, color: [255, 255, 255, 255] }],
                 },
               },
             ],
@@ -632,13 +637,22 @@ async function createBigMap(
   const walkLayer = new GraphicsLayer({ title: walkSection.label });
   walkLayer.add(catchmentGraphic(x, y, walkSection.catchment, "#0f6e56", [15, 110, 86, 0.18]));
 
-  const centerLayer = new GraphicsLayer({ title: "Selected location" });
-  centerLayer.add(kpnStorePoint ? kpnStoreGraphic(kpnStorePoint.x, kpnStorePoint.y) : pointGraphic(x, y));
+    const centerLayer = new GraphicsLayer({ title: "KPN Fresh" });
+  centerLayer.add(
+    kpnStorePoint
+      ? kpnStoreGraphic(
+          kpnStorePoint.x,
+          kpnStorePoint.y,
+          { placeName: kpnStorePoint.placeName, placeId: kpnStorePoint.placeId },
+          { title: "{placeName}", content: "KPN Fresh store location" }
+        )
+      : pointGraphic(x, y, "#d85a30", { placeName: "Selected location" }, { title: "{placeName}", content: "Enriched location for this search." })
+  );
 
-  // All other layers -- suitability, drive/walk catchments, traffic, and
-  // this KPN marker -- stay on by default; every POI category layer
-  // starts switched off (fetched, but not shown) until the person checks
-  // it in the legend.
+  // All other layers -- suitability, drive/walk catchments, and this KPN
+  // marker -- stay on by default; every POI category layer starts
+  // switched off (fetched, but not shown) until the person checks it in
+  // the legend.
   const poiLayers = Object.entries(poiByCategory).map(([category, pois]) => {
     const layer = new GraphicsLayer({ title: category, visible: false });
     const color = categoryColor(category);
@@ -687,12 +701,11 @@ async function createBigMap(
     }
   }
 
-  const trafficLayer = await createTrafficLayer();
-
   // Suitability sits below the catchment fills so their boundary lines
-  // stay visible on top of it, traffic draws above the fills as road
-  // lines, POIs draw above that as discrete points, and the location
-  // marker stays on top of everything.
+  // stay visible on top of it, POIs draw above that as discrete points,
+  // and the location marker stays on top of everything. Live traffic is
+  // deliberately not on this map -- it stays on the two mini-maps under
+  // the walk/drive catchment sections instead.
   const view = new MapView({
     container,
     map: new Map({
@@ -701,7 +714,6 @@ async function createBigMap(
         ...(suitabilityLayer ? [suitabilityLayer] : []),
         driveLayer,
         walkLayer,
-        ...(trafficLayer ? [trafficLayer] : []),
         ...poiLayers,
         centerLayer,
       ],
@@ -788,13 +800,16 @@ async function createBigMap(
   // Legend + per-layer visibility toggles -- a custom panel rather than
   // the built-in Legend widget, since that widget only reads renderers
   // off FeatureLayers and these are plain GraphicsLayers.
-  try {
-    const legendRows: { title: string; color: string; layer: GraphicsLayer | FeatureLayer | MapImageLayer }[] = [
+    try {
+    // `symbol` (when set) renders the layer's actual point/line/fill
+    // symbology into the swatch via symbolUtils, instead of a flat color
+    // square -- used for the KPN marker so the legend shows the real
+    // teardrop-pin-with-dot rather than a generic swatch.
+    const legendRows: { title: string; color: string; symbol?: CIMSymbol; layer: GraphicsLayer | FeatureLayer | MapImageLayer }[] = [
       ...(suitabilityLayer ? [{ title: "Suitability analysis", color: "#2f7d32", layer: suitabilityLayer }] : []),
       { title: driveLayer.title as string, color: "#378add", layer: driveLayer },
       { title: walkLayer.title as string, color: "#0f6e56", layer: walkLayer },
-      ...(trafficLayer ? [{ title: "Live traffic (India)", color: "#e08b2f", layer: trafficLayer }] : []),
-      { title: "Selected location", color: "#bada55", layer: centerLayer },
+      { title: "KPN Fresh", color: "#bada55", symbol: kpnStoreCimSymbol(), layer: centerLayer },
       ...poiLayers.map((l) => ({ title: l.title as string, color: categoryColor(l.title as string), layer: l })),
     ];
     // Checkbox state mirrors each layer's actual default `visible` --
@@ -806,7 +821,7 @@ async function createBigMap(
         ${legendRows.map((r, i) => `
           <label class="fake-legend__row">
             <input type="checkbox" class="map-legend__toggle" data-layer-index="${i}" ${r.layer.visible ? "checked" : ""}>
-            <span class="fake-legend__swatch" style="background:${r.color}"></span>
+            <span class="fake-legend__swatch" data-swatch-index="${i}" style="background:${r.symbol ? "transparent" : r.color}"></span>
             ${r.title}
           </label>
         `).join("")}
@@ -816,6 +831,17 @@ async function createBigMap(
       cb.addEventListener("change", () => {
         const idx = Number(cb.dataset.layerIndex);
         legendRows[idx].layer.visible = cb.checked;
+      });
+    });
+    // Swap the flat swatch for a rendered preview of the real symbol,
+    // where one was given -- async, so it fills in a moment after the
+    // legend first paints rather than blocking it.
+    legendRows.forEach((r, i) => {
+      if (!r.symbol) return;
+      const node = legendContainer.querySelector<HTMLElement>(`[data-swatch-index="${i}"]`);
+      if (!node) return;
+      symbolUtils.renderPreviewHTML(r.symbol, { node, size: 14 }).catch((err) => {
+        console.error("Legend symbol preview failed to render:", err);
       });
     });
         const legendExpand = new Expand({ view, content: legendContainer, expandIcon: "legend", expandTooltip: "Legend & layers", expanded: true });
@@ -838,8 +864,10 @@ const spendingCollection = ENRICHMENT_COLLECTIONS.find((c) => c.collectionId ===
 const consumerStylesLabels = Object.fromEntries(consumerStylesCollection.variables.map((v) => [v.id, v.label]));
 
 function buildNearbyPopulation(enrichment: Record<string, any>): string | null {
-  const curatedIds = ["TOTPOP_CY", "MALES_CY", "FEMALES_CY", "POPDENS_CY"];
+  const curatedIds = ["TOT_P_2026", "TOTPOP_CY", "MALES_CY", "FEMALES_CY", "POPDENS_CY"];
   const stats: { label: string; value: string }[] = [];
+  // 2026 projected population leads the card, ahead of the 2024 figures.
+  if ("TOT_P_2026" in enrichment) stats.push({ label: "2026 Projected", value: formatInt(enrichment.TOT_P_2026) });
   if ("TOTPOP_CY" in enrichment) stats.push({ label: "Total", value: formatInt(enrichment.TOTPOP_CY) });
   if ("MALES_CY" in enrichment) stats.push({ label: "Male", value: formatInt(enrichment.MALES_CY) });
   if ("FEMALES_CY" in enrichment) stats.push({ label: "Female", value: formatInt(enrichment.FEMALES_CY) });
@@ -1009,11 +1037,17 @@ function buildDemographicCards(enrichment: Record<string, any> | null): { kind: 
   const pyramidHtml = buildAgePyramid(enrichment);
   if (pyramidHtml) cards.push({ kind: "teal", title: "Age-group segmentation", body: pyramidHtml });
 
+    // Income and spending combine into one "Income-based analysis" card --
+  // the spending variable(s) render as a labeled sub-section underneath
+  // the income stats rather than as their own separate card.
   const incomeCard = buildGenericCollectionCard(purchasingPowerCollection, enrichment);
-  if (incomeCard) cards.push({ kind: "teal", title: "Income-based analysis", body: incomeCard.body });
-
   const spendingCard = buildGenericCollectionCard(spendingCollection, enrichment);
-  if (spendingCard) cards.push({ kind: "teal", title: "Consumer spending on Food & Beverages", body: spendingCard.body });
+  if (incomeCard || spendingCard) {
+    const spendingHtml = spendingCard
+      ? `<div class="ai-card__subheading">Consumer spending — Food & Beverages</div>${spendingCard.body}`
+      : "";
+    cards.push({ kind: "teal", title: "Income-based analysis", body: `${incomeCard?.body ?? ""}${spendingHtml}` });
+  }
 
   if (cards.length === 0) {
     return [{ kind: "teal", title: "Demographics", body: `<div class="ai-card__stat-label">No data returned for the selected variables in this catchment.</div>` }];
@@ -1115,7 +1149,6 @@ async function renderResults(root: HTMLDivElement, data: any) {
         <div class="result-subtitle">${locationName} · ${summaryLabel}</div>
       </div>
     </div>
-    ${poiCountTableHtml}
     <div class="top-panel">
       <div class="top-panel__left" id="top-panel-left"></div>
       <div class="top-panel__right">
@@ -1127,6 +1160,7 @@ async function renderResults(root: HTMLDivElement, data: any) {
         </div>
       </div>
     </div>
+    ${poiCountTableHtml}
   `;
 
   const leftCol = root.querySelector("#top-panel-left") as HTMLDivElement;
