@@ -3,8 +3,13 @@ import MapView from "@arcgis/core/views/MapView";
 import Map from "@arcgis/core/Map";
 import GraphicsLayer from "@arcgis/core/layers/GraphicsLayer";
 import FeatureLayer from "@arcgis/core/layers/FeatureLayer";
+import MapImageLayer from "@arcgis/core/layers/MapImageLayer";
 import Graphic from "@arcgis/core/Graphic";
 import Circle from "@arcgis/core/geometry/Circle";
+import Polygon from "@arcgis/core/geometry/Polygon";
+import Point from "@arcgis/core/geometry/Point";
+import CIMSymbol from "@arcgis/core/symbols/CIMSymbol";
+import * as geometryEngine from "@arcgis/core/geometry/geometryEngine";
 import BasemapGallery from "@arcgis/core/widgets/BasemapGallery";
 import LocalBasemapsSource from "@arcgis/core/widgets/BasemapGallery/support/LocalBasemapsSource";
 import Basemap from "@arcgis/core/Basemap";
@@ -13,11 +18,181 @@ import Measurement from "@arcgis/core/widgets/Measurement";
 import Expand from "@arcgis/core/widgets/Expand";
 import { enrichPoint } from "./services/geoenrichment";
 import { sampleElevation } from "./services/elevation";
-import { fetchPoiCategories, queryNearbyPois, type PoiResult } from "./services/poi";
+import { fetchPoiCategories, queryNearbyPois, queryPoisInGeometry, type PoiResult } from "./services/poi";
+import { fetchLayerExtent } from "./services/layerExtent";
+import { fetchKpnStoreByName, type KpnStorePoint } from "./services/kpnStores";
 import { solveServiceAreaCatchment } from "./services/serviceArea";
 import type { Catchment } from "./services/catchment";
 import { ENRICHMENT_COLLECTIONS, type EnrichmentCollection } from "./data/enrichmentVariables";
 import { POC_LOCATIONS, type PocLocation } from "./data/locations";
+
+// --- Live traffic (ArcGIS Living Atlas World Traffic service) -----------
+// Scoped to India only by listing just sublayer 32 ("India") at the top
+// level -- every other country/region group in the world service is left
+// out entirely, so nothing outside India ever renders. Within India, only
+// the "Traffic" leaf (id 35) is turned on -- that's the one the source
+// service itself defaults to visible, showing current road-speed
+// conditions; "Live Traffic" (id 34) and both "(Legacy)" leaves are kept
+// in the sublayer tree but switched off. Sublayer 33 ("India Traffic")
+// also carries its own minScale (~1:10,000,000) from the service, so it
+// never draws at country/world zoom -- combined with this app always
+// framing the map to the local 5-min/10-min catchment, that's what keeps
+// traffic restricted to just the enriched location's area, with no extra
+// clipping geometry needed.
+const TRAFFIC_SERVICE_URL = "https://utility.arcgis.com/usrsvcs/servers/148a7ab55f5543159bb3d33ba97eb7ec/rest/services/World/Traffic/MapServer";
+
+async function createTrafficLayer(): Promise<MapImageLayer | null> {
+  try {
+    const layer = new MapImageLayer({
+      url: TRAFFIC_SERVICE_URL,
+      title: "Live traffic (India)",
+      sublayers: [
+        {
+          id: 32, // India (group)
+          visible: true,
+          sublayers: [
+            {
+              id: 33, // India Traffic (group)
+              visible: true,
+              sublayers: [
+                { id: 35, visible: true }, // Traffic -- current conditions, on by default upstream
+                { id: 34, visible: false }, // Live Traffic
+                { id: 134, visible: false }, // Live Traffic (Legacy)
+                { id: 135, visible: false }, // Traffic (Legacy)
+              ],
+            },
+          ],
+        },
+      ],
+    } as any);
+    await layer.load();
+    return layer;
+  } catch (err) {
+    console.error("Traffic layer failed to load -- check TRAFFIC_SERVICE_URL:", err);
+    return null;
+  }
+}
+
+// --- KPN store marker (custom CIM teardrop pin) --------------------------
+// Replaces the plain red dot for the selected location with a pin matching
+// the KPN_Fresh_Stores hosted layer's point for that site: yellow-green
+// teardrop body, semi-transparent black outline, white dot nested near the
+// top. Built from two CIMVectorMarker layers (pin body, then dot on top)
+// rather than a plain simple-marker, since neither shape nor the nested
+// dot can be expressed with SimpleMarkerSymbol alone.
+
+// Generates a closed polygon ring approximating a circle, used for both
+// the dot and (via pinRing below) the rounded top of the pin.
+function circlePath(cx: number, cy: number, r: number, segments = 32): number[][] {
+  const pts: number[][] = [];
+  for (let i = 0; i <= segments; i++) {
+    const angle = (i / segments) * Math.PI * 2;
+    pts.push([cx + r * Math.cos(angle), cy + r * Math.sin(angle)]);
+  }
+  return pts;
+}
+
+// Teardrop pin outline: a rounded cap (the top arc of a circle) tapering
+// down to a point via the two tangent lines from that point back to the
+// circle -- the classic "map pin" silhouette, computed exactly rather than
+// eyeballed so the taper lines meet the circle smoothly with no kink.
+function pinRing(cx: number, cy: number, r: number, tipY: number, segments = 48): number[][] {
+  const d = cy - tipY;
+  const halfAngle = Math.acos(r / d);
+  const baseAngle = -Math.PI / 2; // straight down, from center to tip
+  const startAngle = baseAngle + halfAngle;
+  const endAngle = baseAngle - halfAngle + Math.PI * 2; // long way round, through the top
+  const pts: number[][] = [];
+  for (let i = 0; i <= segments; i++) {
+    const t = startAngle + ((endAngle - startAngle) * i) / segments;
+    pts.push([cx + r * Math.cos(t), cy + r * Math.sin(t)]);
+  }
+  pts.push([cx, tipY]);
+  pts.push(pts[0].slice());
+  return pts;
+}
+
+const KPN_PIN_FRAME = { xmin: -8, ymin: -12, xmax: 8, ymax: 13 };
+const KPN_PIN_RING = pinRing(0, 6, 6.5, -11);
+const KPN_DOT_RING = circlePath(0, 7.5, 2.6, 24);
+
+function kpnStoreCimSymbol(): CIMSymbol {
+  return new CIMSymbol({
+    data: {
+      type: "CIMSymbolReference",
+      symbol: {
+        type: "CIMPointSymbol",
+        symbolLayers: [
+          {
+            // Pin body -- yellow-green fill, semi-transparent black stroke.
+            type: "CIMVectorMarker",
+            enable: true,
+            size: 34,
+            frame: KPN_PIN_FRAME,
+            markerGraphics: [
+              {
+                type: "CIMMarkerGraphic",
+                geometry: { rings: [KPN_PIN_RING] },
+                symbol: {
+                  type: "CIMPolygonSymbol",
+                  symbolLayers: [
+                    { type: "CIMSolidStroke", enable: true, color: [0, 0, 0, 140], width: 1 },
+                    { type: "CIMSolidFill", enable: true, color: [186, 218, 85, 255] },
+                  ],
+                },
+              },
+            ],
+          },
+          {
+            // White dot nested near the top of the pin.
+            type: "CIMVectorMarker",
+            enable: true,
+            size: 34,
+            frame: KPN_PIN_FRAME,
+            markerGraphics: [
+              {
+                type: "CIMMarkerGraphic",
+                geometry: { rings: [KPN_DOT_RING] },
+                symbol: {
+                  type: "CIMPolygonSymbol",
+                  symbolLayers: [{ type: "CIMSolidFill", enable: true, color: [255, 255, 255, 255] }],
+                },
+              },
+            ],
+          },
+        ],
+      },
+    } as any,
+  });
+}
+
+function kpnStoreGraphic(x: number, y: number, attributes?: Record<string, any>, popupTemplate?: __esri.PopupTemplateProperties) {
+  return new Graphic({
+    geometry: { type: "point", x, y, spatialReference: { wkid: 4326 } } as any,
+    symbol: kpnStoreCimSymbol(),
+    attributes,
+    popupTemplate: popupTemplate as any,
+  });
+}
+
+// Point-in-catchment test used by the POI count table -- checks a raw
+// POI point against a walk/drive Catchment directly, independent of
+// whatever geometry the POI was actually fetched against (the suitability
+// extent, now -- see queryPoisInGeometry).
+function catchmentContains(catchment: Catchment, centerX: number, centerY: number, px: number, py: number): boolean {
+  if (catchment.kind === "ring") {
+    const R = 6371;
+    const toRad = (d: number) => (d * Math.PI) / 180;
+    const dLat = toRad(py - centerY);
+    const dLon = toRad(px - centerX);
+    const a = Math.sin(dLat / 2) ** 2 + Math.cos(toRad(centerY)) * Math.cos(toRad(py)) * Math.sin(dLon / 2) ** 2;
+    const dist = 2 * R * Math.asin(Math.sqrt(a));
+    return dist <= catchment.km;
+  }
+  const polygon = new Polygon({ rings: catchment.rings, spatialReference: { wkid: 4326 } });
+  const point = new Point({ x: px, y: py, spatialReference: { wkid: 4326 } });
+  return geometryEngine.contains(polygon, point);
+}
 
 let currentSceneView: SceneView | null = null;
 let currentBigMapView: MapView | null = null;
@@ -233,7 +408,7 @@ export function renderApp(root: HTMLElement) {
   button.addEventListener("click", async () => {
     const locationId = select.value;
     const location = POC_LOCATIONS.find((l) => l.id === locationId) ?? POC_LOCATIONS[0];
-    const variableKeys = getSelectedVariableKeys(root);
+        const variableKeys = getSelectedVariableKeys(root);
     const poiCategories = getSelectedPoiCategories(root);
 
     await runSearch(location, results, variableKeys, poiCategories);
@@ -247,7 +422,7 @@ export function renderApp(root: HTMLElement) {
   });
 }
 
-const CACHE_VERSION = "v10";
+const CACHE_VERSION = "v11";
 
 async function runSearch(
   location: PocLocation,
@@ -272,14 +447,33 @@ async function runSearch(
   }
 
   if (!bundle) {
-    const catchments = await resolveCatchments(location.x, location.y);
+    const [catchments, suitabilityExtent, kpnStorePoint] = await Promise.all([
+      resolveCatchments(location.x, location.y),
+      location.suitabilityLayerUrl ? fetchLayerExtent(location.suitabilityLayerUrl) : Promise.resolve(null),
+      fetchKpnStoreByName(location.name),
+    ]);
 
+    if (location.suitabilityLayerUrl && !suitabilityExtent) {
+      console.warn("Could not read the suitability layer's extent -- falling back to the 10-min walk catchment for the POI fetch.");
+    }
+
+    // POIs are fetched across the whole suitability-analysis layer's
+    // extent for this site, not just the 10-min walk catchment, so the
+    // picker's counts and the map's POI layers cover the full candidate
+    // area. Falls back to the old walk-catchment query when a location
+    // has no suitability layer (or its extent couldn't be read).
     const [miscResults, poiSettled, enrichmentSettled] = await Promise.all([
       Promise.allSettled([
         sampleElevation(location.x, location.y),
         sampleElevationRing(location.x, location.y),
       ]),
-      Promise.allSettled(poiCategories.map((cat) => queryNearbyPois(location.x, location.y, cat, catchments.primary))),
+      Promise.allSettled(
+        poiCategories.map((cat) =>
+          suitabilityExtent
+            ? queryPoisInGeometry(suitabilityExtent, cat)
+            : queryNearbyPois(location.x, location.y, cat, catchments.primary)
+        )
+      ),
       Promise.allSettled(catchments.demographics.map((d) => enrichPoint(location.x, location.y, variableKeys, d.catchment))),
     ]);
 
@@ -310,6 +504,7 @@ async function runSearch(
       locationName: location.name,
       location: { x: location.x, y: location.y },
       suitabilityLayerUrl: location.suitabilityLayerUrl,
+      kpnStorePoint,
       elevation: elevationResult.status === "fulfilled" ? elevationResult.value : null,
       elevationSamples: ringResult.status === "fulfilled" ? ringResult.value : [],
       demographicsSections,
@@ -388,14 +583,22 @@ function catchmentGraphic(
   });
 }
 
-async function createMiniMap(container: HTMLDivElement, x: number, y: number, catchment?: Catchment) {
+async function createMiniMap(
+  container: HTMLDivElement,
+  x: number,
+  y: number,
+  catchment?: Catchment,
+  storePoint?: KpnStorePoint | null
+) {
   const layer = new GraphicsLayer();
   if (catchment) layer.add(catchmentGraphic(x, y, catchment));
-  layer.add(pointGraphic(x, y));
+  layer.add(storePoint ? kpnStoreGraphic(storePoint.x, storePoint.y) : pointGraphic(x, y));
+
+  const trafficLayer = await createTrafficLayer();
 
   const view = new MapView({
     container,
-    map: new Map({ basemap: "arcgis/streets", layers: [layer] }),
+    map: new Map({ basemap: "arcgis/streets", layers: [...(trafficLayer ? [trafficLayer] : []), layer] }),
     center: [x, y],
     zoom: 15,
     constraints: { rotationEnabled: false },
@@ -420,7 +623,8 @@ async function createBigMap(
   walkSection: DemographicCatchment,
   driveSection: DemographicCatchment,
   poiByCategory: Record<string, PoiResult[]>,
-  suitabilityLayerUrl?: string
+  suitabilityLayerUrl?: string,
+  kpnStorePoint?: KpnStorePoint | null
 ) {
   const driveLayer = new GraphicsLayer({ title: driveSection.label });
   driveLayer.add(catchmentGraphic(x, y, driveSection.catchment, "#378add", [55, 138, 221, 0.12]));
@@ -429,10 +633,14 @@ async function createBigMap(
   walkLayer.add(catchmentGraphic(x, y, walkSection.catchment, "#0f6e56", [15, 110, 86, 0.18]));
 
   const centerLayer = new GraphicsLayer({ title: "Selected location" });
-  centerLayer.add(pointGraphic(x, y));
+  centerLayer.add(kpnStorePoint ? kpnStoreGraphic(kpnStorePoint.x, kpnStorePoint.y) : pointGraphic(x, y));
 
+  // All other layers -- suitability, drive/walk catchments, traffic, and
+  // this KPN marker -- stay on by default; every POI category layer
+  // starts switched off (fetched, but not shown) until the person checks
+  // it in the legend.
   const poiLayers = Object.entries(poiByCategory).map(([category, pois]) => {
-    const layer = new GraphicsLayer({ title: category });
+    const layer = new GraphicsLayer({ title: category, visible: false });
     const color = categoryColor(category);
     pois.forEach((p) =>
       layer.add(
@@ -479,14 +687,24 @@ async function createBigMap(
     }
   }
 
+  const trafficLayer = await createTrafficLayer();
+
   // Suitability sits below the catchment fills so their boundary lines
-  // stay visible on top of it, POIs draw above both as discrete points,
-  // and the location marker stays on top of everything.
+  // stay visible on top of it, traffic draws above the fills as road
+  // lines, POIs draw above that as discrete points, and the location
+  // marker stays on top of everything.
   const view = new MapView({
     container,
     map: new Map({
       basemap: "arcgis/streets",
-      layers: [...(suitabilityLayer ? [suitabilityLayer] : []), driveLayer, walkLayer, ...poiLayers, centerLayer],
+      layers: [
+        ...(suitabilityLayer ? [suitabilityLayer] : []),
+        driveLayer,
+        walkLayer,
+        ...(trafficLayer ? [trafficLayer] : []),
+        ...poiLayers,
+        centerLayer,
+      ],
     }),
     constraints: { rotationEnabled: false },
     ui: { components: ["attribution"] },
@@ -571,17 +789,23 @@ async function createBigMap(
   // the built-in Legend widget, since that widget only reads renderers
   // off FeatureLayers and these are plain GraphicsLayers.
   try {
-    const legendRows: { title: string; color: string; layer: GraphicsLayer | FeatureLayer }[] = [
+    const legendRows: { title: string; color: string; layer: GraphicsLayer | FeatureLayer | MapImageLayer }[] = [
       ...(suitabilityLayer ? [{ title: "Suitability analysis", color: "#2f7d32", layer: suitabilityLayer }] : []),
       { title: driveLayer.title as string, color: "#378add", layer: driveLayer },
       { title: walkLayer.title as string, color: "#0f6e56", layer: walkLayer },
+      ...(trafficLayer ? [{ title: "Live traffic (India)", color: "#e08b2f", layer: trafficLayer }] : []),
+      { title: "Selected location", color: "#bada55", layer: centerLayer },
       ...poiLayers.map((l) => ({ title: l.title as string, color: categoryColor(l.title as string), layer: l })),
     ];
+    // Checkbox state mirrors each layer's actual default `visible` --
+    // true for everything above, false for the POI layers -- rather than
+    // being hardcoded, so this panel can never drift out of sync with
+    // what's actually drawn on the map.
     legendContainer.innerHTML = `
       <div class="map-legend-panel">
         ${legendRows.map((r, i) => `
           <label class="fake-legend__row">
-            <input type="checkbox" class="map-legend__toggle" data-layer-index="${i}" checked>
+            <input type="checkbox" class="map-legend__toggle" data-layer-index="${i}" ${r.layer.visible ? "checked" : ""}>
             <span class="fake-legend__swatch" style="background:${r.color}"></span>
             ${r.title}
           </label>
@@ -594,7 +818,7 @@ async function createBigMap(
         legendRows[idx].layer.visible = cb.checked;
       });
     });
-    const legendExpand = new Expand({ view, content: legendContainer, expandIcon: "legend", expandTooltip: "Legend & layers", expanded: true });
+        const legendExpand = new Expand({ view, content: legendContainer, expandIcon: "legend", expandTooltip: "Legend & layers", expanded: true });
     view.ui.add(legendExpand, "top-left");
   } catch (err) {
     console.error("Legend panel failed to initialize:", err);
@@ -803,7 +1027,8 @@ async function appendDemographicCards(
   cards: { kind: string; title: string; body: string; wire?: (card: HTMLElement) => void }[],
   x: number,
   y: number,
-  catchment: Catchment
+  catchment: Catchment,
+  storePoint?: KpnStorePoint | null
 ) {
   for (const c of cards) {
     const card = document.createElement("div");
@@ -813,7 +1038,7 @@ async function appendDemographicCards(
     container.appendChild(card);
 
     const minimap = card.querySelector(".ai-card__minimap");
-    if (minimap) await createMiniMap(minimap as HTMLDivElement, x, y, catchment);
+    if (minimap) await createMiniMap(minimap as HTMLDivElement, x, y, catchment, storePoint);
 
     c.wire?.(card);
   }
@@ -826,7 +1051,7 @@ async function renderResults(root: HTMLDivElement, data: any) {
 
   const {
     locationName, location, elevation, elevationSamples,
-    demographicsSections, poiByCategory, summaryLabel, suitabilityLayerUrl,
+    demographicsSections, poiByCategory, summaryLabel, suitabilityLayerUrl, kpnStorePoint,
   } = data as {
     locationName: string; location: { x: number; y: number };
     elevation: number | null; elevationSamples: number[];
@@ -834,9 +1059,53 @@ async function renderResults(root: HTMLDivElement, data: any) {
     poiByCategory: Record<string, PoiResult[]>;
     summaryLabel: string;
     suitabilityLayerUrl?: string;
+    kpnStorePoint?: KpnStorePoint | null;
   };
   const roughness = stdDev(elevationSamples || []);
   const x = location.x, y = location.y;
+
+  const walkSection = demographicsSections.find((s) => s.label.toLowerCase().includes("walk")) ?? demographicsSections[0];
+  const driveSection = demographicsSections.find((s) => s.label.toLowerCase().includes("drive")) ?? demographicsSections[1];
+
+  // POI category/count table -- counts each already-fetched category's
+  // points against the 5-min drive and 10-min walk catchments specifically,
+  // independent of the (now much larger) suitability-extent geometry they
+  // were actually queried against.
+  const poiCountRows = Object.entries(poiByCategory)
+    .map(([category, pois]) => ({
+      category,
+      driveCount: pois.filter((p) => catchmentContains(driveSection.catchment, x, y, p.x, p.y)).length,
+      walkCount: pois.filter((p) => catchmentContains(walkSection.catchment, x, y, p.x, p.y)).length,
+    }))
+    .sort((a, b) => b.driveCount + b.walkCount - (a.driveCount + a.walkCount));
+
+  const poiCountTableHtml = poiCountRows.length
+    ? `
+    <div class="ai-card poi-count-card" data-kind="teal">
+      <div class="ai-card__header">Nearby places — counts by catchment</div>
+      <div class="ai-card__body">
+        <table class="poi-count-table">
+          <thead>
+            <tr><th>Category</th><th>5-min drive</th><th>10-min walk</th></tr>
+          </thead>
+          <tbody>
+            ${poiCountRows
+              .map(
+                (r) => `
+              <tr>
+                <td><span class="poi-swatch" style="background:${categoryColor(r.category)}"></span>${r.category}</td>
+                <td>${formatInt(r.driveCount)}</td>
+                <td>${formatInt(r.walkCount)}</td>
+              </tr>
+            `
+              )
+              .join("")}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `
+    : "";
 
   root.innerHTML = `
     <div class="result-header">
@@ -846,6 +1115,7 @@ async function renderResults(root: HTMLDivElement, data: any) {
         <div class="result-subtitle">${locationName} · ${summaryLabel}</div>
       </div>
     </div>
+    ${poiCountTableHtml}
     <div class="top-panel">
       <div class="top-panel__left" id="top-panel-left"></div>
       <div class="top-panel__right">
@@ -881,7 +1151,7 @@ async function renderResults(root: HTMLDivElement, data: any) {
     console.error("Scene view: invalid coordinates for", locationName, "-- check that entry in src/data/locations.ts", { x, y });
   }
 
-  const centerGraphic = pointGraphic(x, y);
+  const centerGraphic = kpnStorePoint ? kpnStoreGraphic(kpnStorePoint.x, kpnStorePoint.y) : pointGraphic(x, y);
   const sceneLayer = new GraphicsLayer();
   sceneLayer.add(centerGraphic);
   currentSceneView = new SceneView({
@@ -916,12 +1186,9 @@ async function renderResults(root: HTMLDivElement, data: any) {
     <div class="ai-card__stat-label">Std. dev. of nearby elevation samples (real, derived)</div>
   `);
 
-  const walkSection = demographicsSections.find((s) => s.label.toLowerCase().includes("walk")) ?? demographicsSections[0];
-  const driveSection = demographicsSections.find((s) => s.label.toLowerCase().includes("drive")) ?? demographicsSections[1];
-
   const bigMapDiv = root.querySelector("#big-map") as HTMLDivElement;
   const legendContainer = document.createElement("div");
-  await createBigMap(bigMapDiv, legendContainer, x, y, walkSection, driveSection, poiByCategory, suitabilityLayerUrl);
+  await createBigMap(bigMapDiv, legendContainer, x, y, walkSection, driveSection, poiByCategory, suitabilityLayerUrl, kpnStorePoint);
 
   if (demographicsSections.length < 2) {
     console.error("Expected two demographic sections (walk + drive); got", demographicsSections.length);
@@ -941,6 +1208,6 @@ async function renderResults(root: HTMLDivElement, data: any) {
     splitWrap.appendChild(col);
 
     const cards = buildDemographicCards(section.enrichment);
-    await appendDemographicCards(col, cards, x, y, section.catchment);
+    await appendDemographicCards(col, cards, x, y, section.catchment, kpnStorePoint);
   }
 }

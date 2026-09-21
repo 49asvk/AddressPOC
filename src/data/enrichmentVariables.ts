@@ -22,7 +22,6 @@ export const ENRICHMENT_COLLECTIONS: EnrichmentCollection[] = [
     variables: [
       { id: "TOTPOP_CY", label: "2024 Total Population" },
       { id: "POPDENS_CY", label: "2024 Population Density (per km²)" },
-      { id: "POPPRM_CY", label: "2024 Population Per Mill" },
       { id: "MALES_CY", label: "2024 Total Male Population" },
       { id: "FEMALES_CY", label: "2024 Total Female Population" },
       { id: "TOT_P_2026", label: "2026 Total Population" },
@@ -59,7 +58,6 @@ export const ENRICHMENT_COLLECTIONS: EnrichmentCollection[] = [
     label: "Income-based analysis",
     variables: [
       { id: "PP_CY", label: "2024 Purchasing Power: Total", unit: "currency" },
-      { id: "PPPRM_CY", label: "2024 Purchasing Power: Per Mill" },
       { id: "PPPC_CY", label: "2024 Purchasing Power: Per Capita", unit: "currency" },
       { id: "PPIDX_CY", label: "2024 Purchasing Power: Index" },
     ],

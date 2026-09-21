@@ -49,7 +49,12 @@ body { margin: 0; font-family: system-ui, sans-serif; background: #f4f3ef; }
 .big-map { position: absolute; inset: 0; }
 
 .poi-swatch { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin: 0 2px; }
-
+.poi-count-card { margin: 0 var(--ai-gap) var(--ai-gap); }
+.poi-count-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.poi-count-table th { text-align: left; padding: 6px 10px; color: #666; font-weight: 600; font-size: 12px; border-bottom: 2px solid #e2e2e2; }
+.poi-count-table td { padding: 6px 10px; border-bottom: 1px solid #f0f0f0; }
+.poi-count-table td:not(:first-child) { text-align: right; font-variant-numeric: tabular-nums; }
+.poi-count-table .poi-swatch { margin-left: 0; }
 .map-legend-panel { padding: 8px 10px; min-width: 210px; max-height: 320px; overflow-y: auto; font-size: 12px; }
 .map-legend-panel .fake-legend__row { cursor: pointer; }
 .map-legend-panel input[type="checkbox"] { margin: 0; }

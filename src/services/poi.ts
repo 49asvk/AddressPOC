@@ -105,3 +105,37 @@ export async function queryNearbyPois(
     })
     .filter((p): p is PoiResult => p.x != null && p.y != null);
 }
+
+// Same as queryNearbyPois but scoped to an arbitrary geometry (an Extent,
+// typically) instead of a walk/drive Catchment -- used to fetch POIs
+// across a location's entire suitability-analysis layer rather than just
+// its 10-min walk catchment. The geometry carries its own
+// spatialReference (as returned by queryExtent), so this reprojects
+// correctly against the POI layer without any manual conversion.
+export async function queryPoisInGeometry(geometry: __esri.Geometry, mainCategory: string): Promise<PoiResult[]> {
+  const escaped = mainCategory.replace(/'/g, "''");
+  const q = new Query({
+    geometry: geometry as any,
+    spatialRelationship: "intersects",
+    where: `${DESC_FIELD} LIKE '${escaped}-%'`,
+    outFields: ["NAME", DESC_FIELD],
+    returnGeometry: true,
+    outSpatialReference: { wkid: 4326 } as any,
+  });
+
+  const result = await query.executeQueryJSON(POI_LAYER_URL, q);
+
+  return result.features
+    .map((f) => {
+      const pt = f.geometry as __esri.Point;
+      const description = (f.attributes[DESC_FIELD] as string) || mainCategory;
+      return {
+        name: (f.attributes.NAME as string) || description,
+        category: mainCategory,
+        description,
+        x: pt?.x,
+        y: pt?.y,
+      };
+    })
+    .filter((p): p is PoiResult => p.x != null && p.y != null);
+}
