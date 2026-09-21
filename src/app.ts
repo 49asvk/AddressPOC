@@ -2,6 +2,7 @@ import SceneView from "@arcgis/core/views/SceneView";
 import MapView from "@arcgis/core/views/MapView";
 import Map from "@arcgis/core/Map";
 import GraphicsLayer from "@arcgis/core/layers/GraphicsLayer";
+import FeatureLayer from "@arcgis/core/layers/FeatureLayer";
 import Graphic from "@arcgis/core/Graphic";
 import Circle from "@arcgis/core/geometry/Circle";
 import BasemapGallery from "@arcgis/core/widgets/BasemapGallery";
@@ -46,20 +47,22 @@ function categoryColor(category: string): string {
   return DONUT_COLORS[hash % DONUT_COLORS.length];
 }
 
-// Keyword groups matching the 8 categories this PoC cares about --
-// any fetched category whose label contains one of these substrings
-// starts pre-checked in the "Nearby places" picker. Everything else
-// still shows up, just unchecked, so nothing from the source layer is
-// hidden -- it's only a sensible default selection.
+// Keyword groups matched against the main-category names derived from
+// the new POI layer (see services/poi.ts) -- any category whose name
+// contains one of these substrings starts pre-checked in the "Nearby
+// places" picker. Everything else still shows up, just unchecked, so
+// nothing from the source layer is hidden -- it's only a sensible
+// default selection. Updated for the new layer's main-category names
+// (e.g. "Sports Center", not "Gym"; there's no "Park"/"Garden" category
+// in this layer at all, so that old default group is dropped).
 const POI_DEFAULT_KEYWORD_GROUPS: string[][] = [
-  ["restaurant", "qsr", "cafe", "cafeteria", "food", "dine", "dining"], // Restaurants and QSRs
-  ["gym", "fitness"], // Gyms
-  ["worship", "temple", "mosque", "church", "gurudwara", "religious"], // Places of worship
-  ["residential", "apartment", "housing", "society"], // Residential accommodations
-  ["market", "bazaar"], // Markets
-  ["department", "supermarket", "hypermarket"], // Departmental stores
-  ["retail", "shop", "store"], // Retail shops
-  ["park", "garden"], // Parks
+  ["restaurant"], // Restaurants and QSRs
+  ["sports center", "sports centre"], // Gyms / fitness centers
+  ["place of worship"], // Places of worship
+  ["residential accommodation"], // Residential accommodations
+  ["market"], // Markets
+  ["department store"], // Departmental stores
+  ["shop", "shopping center", "shopping centre"], // Retail shops across multiple categories
 ];
 
 function isDefaultPoiCategory(category: string): boolean {
@@ -244,7 +247,7 @@ export function renderApp(root: HTMLElement) {
   });
 }
 
-const CACHE_VERSION = "v9";
+const CACHE_VERSION = "v10";
 
 async function runSearch(
   location: PocLocation,
@@ -306,6 +309,7 @@ async function runSearch(
     bundle = {
       locationName: location.name,
       location: { x: location.x, y: location.y },
+      suitabilityLayerUrl: location.suitabilityLayerUrl,
       elevation: elevationResult.status === "fulfilled" ? elevationResult.value : null,
       elevationSamples: ringResult.status === "fulfilled" ? ringResult.value : [],
       demographicsSections,
@@ -333,17 +337,19 @@ function stdDev(values: number[]) {
   return Math.sqrt(variance);
 }
 
-function formatCompact(n: number) {
-  return new Intl.NumberFormat(undefined, { notation: "compact", maximumFractionDigits: 1 }).format(n);
-}
-
 function formatInt(n: number) {
   return new Intl.NumberFormat().format(Math.round(n));
 }
 
+// Exact value, grouped with commas, no "k"/"million"/"bn" abbreviation --
+// shows up to 2 decimal places only when the value actually has them.
+function formatExact(n: number) {
+  return new Intl.NumberFormat(undefined, { maximumFractionDigits: 2 }).format(n);
+}
+
 function formatFieldValue(raw: any, unit?: "currency") {
   if (typeof raw !== "number") return raw ?? "—";
-  return unit === "currency" ? `₹${formatCompact(raw)}` : formatCompact(raw);
+  return unit === "currency" ? `₹${formatExact(raw)}` : formatExact(raw);
 }
 
 function pointGraphic(
@@ -413,7 +419,8 @@ async function createBigMap(
   y: number,
   walkSection: DemographicCatchment,
   driveSection: DemographicCatchment,
-  poiByCategory: Record<string, PoiResult[]>
+  poiByCategory: Record<string, PoiResult[]>,
+  suitabilityLayerUrl?: string
 ) {
   const driveLayer = new GraphicsLayer({ title: driveSection.label });
   driveLayer.add(catchmentGraphic(x, y, driveSection.catchment, "#378add", [55, 138, 221, 0.12]));
@@ -429,18 +436,58 @@ async function createBigMap(
     const color = categoryColor(category);
     pois.forEach((p) =>
       layer.add(
-        pointGraphic(p.x, p.y, color, { name: p.name, category: p.category }, {
+        pointGraphic(p.x, p.y, color, { name: p.name, category: p.category, description: p.description }, {
           title: "{name}",
-          content: "Category: {category}",
+          content: "Category: {category}<br>Type: {description}",
         })
       )
     );
     return layer;
   });
 
+  // Suitability analysis -- a hosted FeatureLayer specific to this
+  // location's candidate-site grid, added straight from its URL. We
+  // deliberately don't set our own renderer: the layer keeps whatever
+  // symbology/classification it was published with (the class breaks on
+  // FinalScore), we only curate the popup so it doesn't dump all ~40
+  // Score_/Weighted_score_ fields on click.
+  let suitabilityLayer: FeatureLayer | null = null;
+  if (suitabilityLayerUrl) {
+    try {
+      const layer = new FeatureLayer({
+        url: suitabilityLayerUrl,
+        title: "Suitability analysis",
+        opacity: 0.75,
+        popupTemplate: {
+          title: "Suitability zone — Rank {Rank}",
+          content: [
+            {
+              type: "fields",
+              fieldInfos: [
+                { fieldName: "FinalScore", label: "Suitability score", format: { places: 3 } },
+                { fieldName: "Rank", label: "Rank" },
+                { fieldName: "GRID_ID", label: "Grid cell ID" },
+              ],
+            },
+          ],
+        } as any,
+      });
+      await layer.load();
+      suitabilityLayer = layer;
+    } catch (err) {
+      console.error("Suitability layer failed to load -- check the URL and that the item is shared publicly:", err, suitabilityLayerUrl);
+    }
+  }
+
+  // Suitability sits below the catchment fills so their boundary lines
+  // stay visible on top of it, POIs draw above both as discrete points,
+  // and the location marker stays on top of everything.
   const view = new MapView({
     container,
-    map: new Map({ basemap: "arcgis/streets", layers: [driveLayer, walkLayer, ...poiLayers, centerLayer] }),
+    map: new Map({
+      basemap: "arcgis/streets",
+      layers: [...(suitabilityLayer ? [suitabilityLayer] : []), driveLayer, walkLayer, ...poiLayers, centerLayer],
+    }),
     constraints: { rotationEnabled: false },
     ui: { components: ["attribution"] },
   });
@@ -524,10 +571,11 @@ async function createBigMap(
   // the built-in Legend widget, since that widget only reads renderers
   // off FeatureLayers and these are plain GraphicsLayers.
   try {
-    const legendRows = [
-      { title: driveLayer.title as string, color: "#378add", layer: driveLayer as GraphicsLayer },
-      { title: walkLayer.title as string, color: "#0f6e56", layer: walkLayer as GraphicsLayer },
-      ...poiLayers.map((l) => ({ title: l.title as string, color: categoryColor(l.title as string), layer: l as GraphicsLayer })),
+    const legendRows: { title: string; color: string; layer: GraphicsLayer | FeatureLayer }[] = [
+      ...(suitabilityLayer ? [{ title: "Suitability analysis", color: "#2f7d32", layer: suitabilityLayer }] : []),
+      { title: driveLayer.title as string, color: "#378add", layer: driveLayer },
+      { title: walkLayer.title as string, color: "#0f6e56", layer: walkLayer },
+      ...poiLayers.map((l) => ({ title: l.title as string, color: categoryColor(l.title as string), layer: l })),
     ];
     legendContainer.innerHTML = `
       <div class="map-legend-panel">
@@ -561,7 +609,6 @@ async function createBigMap(
 const populationCollection = ENRICHMENT_COLLECTIONS.find((c) => c.collectionId === "PopulationEsriIndia")!;
 const ageIncrementsCollection = ENRICHMENT_COLLECTIONS.find((c) => c.collectionId === "15YearIncrementsEsriIndia")!;
 const consumerStylesCollection = ENRICHMENT_COLLECTIONS.find((c) => c.collectionId === "ConsumerStylesEsriIndia")!;
-const householdsCollection = ENRICHMENT_COLLECTIONS.find((c) => c.collectionId === "HouseholdsEsriIndia")!;
 const purchasingPowerCollection = ENRICHMENT_COLLECTIONS.find((c) => c.collectionId === "PurchasingPowerEsriIndia")!;
 const spendingCollection = ENRICHMENT_COLLECTIONS.find((c) => c.collectionId === "SpendingEsriIndia")!;
 const consumerStylesLabels = Object.fromEntries(consumerStylesCollection.variables.map((v) => [v.id, v.label]));
@@ -738,9 +785,6 @@ function buildDemographicCards(enrichment: Record<string, any> | null): { kind: 
   const pyramidHtml = buildAgePyramid(enrichment);
   if (pyramidHtml) cards.push({ kind: "teal", title: "Age-group segmentation", body: pyramidHtml });
 
-  const householdCard = buildGenericCollectionCard(householdsCollection, enrichment);
-  if (householdCard) cards.push({ kind: "teal", title: "Household analysis", body: householdCard.body });
-
   const incomeCard = buildGenericCollectionCard(purchasingPowerCollection, enrichment);
   if (incomeCard) cards.push({ kind: "teal", title: "Income-based analysis", body: incomeCard.body });
 
@@ -782,13 +826,14 @@ async function renderResults(root: HTMLDivElement, data: any) {
 
   const {
     locationName, location, elevation, elevationSamples,
-    demographicsSections, poiByCategory, summaryLabel,
+    demographicsSections, poiByCategory, summaryLabel, suitabilityLayerUrl,
   } = data as {
     locationName: string; location: { x: number; y: number };
     elevation: number | null; elevationSamples: number[];
     demographicsSections: { label: string; catchment: Catchment; enrichment: Record<string, any> | null }[];
     poiByCategory: Record<string, PoiResult[]>;
     summaryLabel: string;
+    suitabilityLayerUrl?: string;
   };
   const roughness = stdDev(elevationSamples || []);
   const x = location.x, y = location.y;
@@ -876,7 +921,7 @@ async function renderResults(root: HTMLDivElement, data: any) {
 
   const bigMapDiv = root.querySelector("#big-map") as HTMLDivElement;
   const legendContainer = document.createElement("div");
-  await createBigMap(bigMapDiv, legendContainer, x, y, walkSection, driveSection, poiByCategory);
+  await createBigMap(bigMapDiv, legendContainer, x, y, walkSection, driveSection, poiByCategory, suitabilityLayerUrl);
 
   if (demographicsSections.length < 2) {
     console.error("Expected two demographic sections (walk + drive); got", demographicsSections.length);

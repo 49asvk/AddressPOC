@@ -10,18 +10,46 @@ export interface PocLocation {
   name: string;
   x: number;
   y: number;
+  // Hosted suitability-analysis layer for this specific site (grid cells
+  // scored/ranked by FinalScore). Optional so a location can still work
+  // without one -- the big map just skips that layer if it's unset.
+  suitabilityLayerUrl?: string;
 }
 
-// TODO: replace name/x/y for each of the 5 with the actual client sites.
-// Placeholder coordinates below just point at 5 different Indian cities
-// so the dropdown and map have something real to render against.
 export const POC_LOCATIONS: PocLocation[] = [
-  { id: "loc-1", name: "KPN FF 1099 T Nagar 3", x: 80.238249, y: 13.034878 },
-  { id: "loc-2", name: "KPN FF 2005 Alwal", x: 78.5112555, y: 17.499804 },
-  { id: "loc-3", name: "KPN FF 2020 Mokila", x: 78.197697, y: 17.428812 },
-  { id: "loc-4", name: "KPN FF 3042 Girinagar", x: 77.547451, y: 12.942595 },
-  { id: "loc-5", name: "KPN FF 5002 Sreemoolanagaram", x: 76.403008, y: 10.134563 },
+  {
+    id: "loc-1",
+    name: "KPN FF 1099 T Nagar 3",
+    x: 80.238249,
+    y: 13.034878,
+    suitabilityLayerUrl: "https://services7.arcgis.com/8phUg7DrlXpKgLyA/arcgis/rest/services/Candidate_Sites_T_Nagar_3/FeatureServer/1",
+  },
+  {
+    id: "loc-2",
+    name: "KPN FF 2005 Alwal",
+    x: 78.5112555,
+    y: 17.499804,
+    suitabilityLayerUrl: "https://services7.arcgis.com/8phUg7DrlXpKgLyA/arcgis/rest/services/Candidate_Sites_Alwal/FeatureServer/1",
+  },
+  {
+    id: "loc-3",
+    name: "KPN FF 2020 Mokila",
+    x: 78.197697,
+    y: 17.428812,
+    suitabilityLayerUrl: "https://services7.arcgis.com/8phUg7DrlXpKgLyA/arcgis/rest/services/Candidate_Sites_Mokila/FeatureServer/1",
+  },
+  {
+    id: "loc-4",
+    name: "KPN FF 3042 Girinagar",
+    x: 77.547451,
+    y: 12.942595,
+    suitabilityLayerUrl: "https://services7.arcgis.com/8phUg7DrlXpKgLyA/arcgis/rest/services/Candidate_Sites_Girinagar/FeatureServer/1",
+  },
+  {
+    id: "loc-5",
+    name: "KPN FF 5002 Sreemoolanagaram",
+    x: 76.403008,
+    y: 10.134563,
+    suitabilityLayerUrl: "https://services7.arcgis.com/8phUg7DrlXpKgLyA/arcgis/rest/services/Candidate_Sites_Sreemoolanagaram/FeatureServer/1",
+  },
 ];
-	
- 
- 

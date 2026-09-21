@@ -28,9 +28,8 @@ export const ENRICHMENT_COLLECTIONS: EnrichmentCollection[] = [
       { id: "TOT_P_2026", label: "2026 Total Population" },
       { id: "TOT_M_2026", label: "2026 Male Population" },
       { id: "TOT_F_2026", label: "2026 Female Population" },
-      // { id: "P_06_2011", label: "2011 Total Population 0-6 Yrs" },
-      // { id: "M_06_2011", label: "2011 Male Population 0-6 Yrs" },
-      // { id: "F_06_2011", label: "2011 Female Population 0-6 Yrs" },
+      // All 2011-vintage fields removed per your instruction -- no 2011
+      // data anywhere in the app now.
     ],
   },
   {
@@ -86,19 +85,8 @@ export const ENRICHMENT_COLLECTIONS: EnrichmentCollection[] = [
     label: "Consumer spending on Food & Beverages",
     variables: [{ id: "CS01_CY", label: "Food & Non-Alcoholic Beverage Spending", unit: "currency" }],
   },
-  {
-    collectionId: "HouseholdsEsriIndia",
-    label: "Household analysis",
-    variables: [
-      { id: "TOTHH_CY", label: "2024 Total Households" },
-      { id: "AVGHHSZ_CY", label: "2024 Average Household Size" },
-      { id: "OW_OWNED_2011", label: "2011 HHs: Owned House" },
-      { id: "OW_RENTED_2011", label: "2011 HHs: Rented House" },
-      { id: "HH_4WHEEL_2011", label: "2011 HHs With a Car/Jeep/Van" },
-      { id: "HH_2WHEEL_2011", label: "2011 HHs With a Scooter/Motorcycle" },
-      { id: "HH_TVCOMP_2011", label: "2011 HHs With a TV/Computer/Laptop" },
-      { id: "HH_CMP_INT_2011", label: "2011 HHs With a Computer & Internet" },
-      { id: "HH_PH_MOB_2011", label: "2011 HHs With a Mobile Phone" },
-    ],
-  },
+  // Household analysis collection removed entirely -- every field in it
+  // besides TOTHH_CY/AVGHHSZ_CY was 2011-only with no current-year
+  // replacement, so per your instruction the whole card is gone rather
+  // than left half-populated.
 ];
