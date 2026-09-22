@@ -1478,6 +1478,32 @@ async function appendDemographicCards(
   }
 }
 
+// Replaces the old separate "Elevation" / "Terrain roughness" cards --
+// those two numbers aren't useful for this PoC's actual purpose, so this
+// pulls a quick top-line summary instead from data already being
+// fetched anyway (5-min drive enrichment + the POI count table), for a
+// glance at "who lives here and what's around" before scrolling further.
+function buildTldrCard(enrichment: Record<string, any> | null, nearbyPlacesCount: number): string {
+  const rows: { label: string; value: string }[] = [];
+
+  if (enrichment) {
+    if ("TOTPOP_CY" in enrichment) rows.push({ label: "Population (5-min drive)", value: formatInt(enrichment.TOTPOP_CY) });
+    if ("PPPC_CY" in enrichment) rows.push({ label: "Purchasing power / capita", value: formatFieldValue(enrichment.PPPC_CY, "currency") });
+
+    // Whichever Consumer Styles segment has the highest value here is the
+    // single dominant lifestyle group in the catchment -- a quick
+    // qualitative read to go with the population/spending numbers.
+    const topSegmentCode = Object.keys(consumerStylesLabels)
+      .filter((c) => c in enrichment)
+      .sort((a, b) => (Number(enrichment[b]) || 0) - (Number(enrichment[a]) || 0))[0];
+    if (topSegmentCode) rows.push({ label: "Dominant lifestyle segment", value: consumerStylesLabels[topSegmentCode] });
+  }
+
+  rows.push({ label: "Nearby places found (5-min drive)", value: formatInt(nearbyPlacesCount) });
+
+  return `<div class="tldr-card">${rows.map((r) => `<div class="ai-card__row"><span>${r.label}</span><b>${r.value}</b></div>`).join("")}</div>`;
+}
+
 // -------------------------------------------------------------------------
 
 async function renderResults(root: HTMLDivElement, data: any) {
@@ -1666,7 +1692,7 @@ async function renderResults(root: HTMLDivElement, data: any) {
   restrictWheelZoomToCtrl(sceneDiv);
   currentSceneView = new SceneView({
     container: sceneDiv,
-    map: new Map({ basemap: "arcgis/imagery", ground: "world-elevation", layers: [buildingsLayer, sceneLayer] }),
+    map: sceneMap,
     ui: { components: ["attribution"] },
   });
   await currentSceneView.when();
@@ -1694,6 +1720,13 @@ async function renderResults(root: HTMLDivElement, data: any) {
   let goToTarget: __esri.Point = centerGraphic.geometry as __esri.Point;
   try {
     const ground = sceneMap.ground;
+    // queryElevation needs Ground's own elevation layers loaded first --
+    // without this it can silently resolve against unloaded/default
+    // elevation (effectively z=0) instead of throwing, which sent the
+    // camera's goTo target to the wrong height and hid the 3D Buildings
+    // layer entirely (camera ended up framed against empty space/terrain
+    // instead of the building meshes).
+    await ground.load();
     const elevationResult = await ground.queryElevation(goToTarget);
     if (elevationResult?.geometry) {
       goToTarget = elevationResult.geometry as __esri.Point;
@@ -1717,14 +1750,11 @@ async function renderResults(root: HTMLDivElement, data: any) {
     console.error("Home widget failed to initialize on scene view:", err);
   }
 
-  addLeftCard("amber", "Elevation", elevation != null
-    ? `<div class="ai-card__stat">${elevation.toFixed(1)} m</div><div class="ai-card__stat-label">Above sea level</div>`
-    : `<div class="ai-card__stat-label">Unavailable — check the Elevation privilege on your API key.</div>`);
-
-  addLeftCard("amber", "Terrain roughness", `
-    <div class="ai-card__stat">${roughness.toFixed(2)}</div>
-    <div class="ai-card__stat-label">Std. dev. of nearby elevation samples (real, derived)</div>
-  `);
+  addLeftCard(
+    "amber",
+    "At a glance",
+    buildTldrCard(driveSection.enrichment, poiCountRows.reduce((sum, r) => sum + r.driveCount, 0))
+  );
 
   const bigMapDiv = root.querySelector("#big-map") as HTMLDivElement;
   const legendContainer = document.createElement("div");
