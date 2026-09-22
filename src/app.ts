@@ -12,8 +12,11 @@ import Circle from "@arcgis/core/geometry/Circle";
 import Polygon from "@arcgis/core/geometry/Polygon";
 import Point from "@arcgis/core/geometry/Point";
 import CIMSymbol from "@arcgis/core/symbols/CIMSymbol";
+import PictureMarkerSymbol from "@arcgis/core/symbols/PictureMarkerSymbol";
 import * as symbolUtils from "@arcgis/core/symbols/support/symbolUtils";
 import * as geometryEngine from "@arcgis/core/geometry/geometryEngine";
+import * as colorSchemes from "@arcgis/core/smartMapping/symbology/color";
+import * as colorRendererCreator from "@arcgis/core/smartMapping/renderers/color";
 import BasemapGallery from "@arcgis/core/widgets/BasemapGallery";
 import LocalBasemapsSource from "@arcgis/core/widgets/BasemapGallery/support/LocalBasemapsSource";
 import Basemap from "@arcgis/core/Basemap";
@@ -30,6 +33,30 @@ import { solveServiceAreaCatchment } from "./services/serviceArea";
 import type { Catchment } from "./services/catchment";
 import { ENRICHMENT_COLLECTIONS } from "./data/enrichmentVariables";
 import { POC_LOCATIONS, type PocLocation } from "./data/locations";
+
+// --- POI category icons (Calcite icon glyphs) ----------------------------
+// Raw SVG source for a handful of @esri/calcite-ui-icons glyphs, imported
+// as plain text via Vite's `?raw` suffix so the glyph <path> data can be
+// re-embedded (recolored) inside the custom marker badges built below.
+// IMPORTANT, checked directly against the full installed Calcite icon
+// catalog: there is no dedicated icon anywhere in Calcite's icon set for
+// restaurants/dining, places of worship, clothing, or footwear -- it's
+// built for GIS-application chrome (data, analysis, layers), not
+// real-world amenity types. Those categories fall back to "pin-tear" (a
+// plain map-pin glyph) below rather than a mismatched substitute.
+import runningIconSvg from "@esri/calcite-ui-icons/icons/running-24.svg?raw";
+import homeIconSvg from "@esri/calcite-ui-icons/icons/home-24.svg?raw";
+import shoppingCartIconSvg from "@esri/calcite-ui-icons/icons/shopping-cart-24.svg?raw";
+import marketplaceIconSvg from "@esri/calcite-ui-icons/icons/marketplace-24.svg?raw";
+import medicalIconSvg from "@esri/calcite-ui-icons/icons/medical-24.svg?raw";
+import educationIconSvg from "@esri/calcite-ui-icons/icons/education-24.svg?raw";
+import moneyIconSvg from "@esri/calcite-ui-icons/icons/money-24.svg?raw";
+import governmentBuildingIconSvg from "@esri/calcite-ui-icons/icons/government-building-24.svg?raw";
+import treeIconSvg from "@esri/calcite-ui-icons/icons/tree-24.svg?raw";
+import busIconSvg from "@esri/calcite-ui-icons/icons/bus-24.svg?raw";
+import carIconSvg from "@esri/calcite-ui-icons/icons/car-24.svg?raw";
+import bookIconSvg from "@esri/calcite-ui-icons/icons/book-24.svg?raw";
+import pinTearIconSvg from "@esri/calcite-ui-icons/icons/pin-tear-24.svg?raw";
 
 // --- Live traffic (ArcGIS Living Atlas World Traffic service) -----------
 // Scoped to India only by listing just sublayer 32 ("India") at the top
@@ -332,6 +359,98 @@ function isDefaultPoiCategory(category: string): boolean {
   return POI_DEFAULT_KEYWORD_GROUPS.some((group) => group.some((k) => lower.includes(k)));
 }
 
+// --- Category icons ---------------------------------------------------
+// Keyword-matched the same way as POI_DEFAULT_KEYWORD_GROUPS above, but
+// picking a Calcite icon glyph instead of a default-checked state. Used
+// both for the map markers (baked into a colored badge, see
+// poiMarkerDataUri) and the legend rows (as a plain <calcite-icon>), so
+// the same glyph always represents the same category everywhere.
+interface PoiIconInfo {
+  /** Calcite icon name, e.g. "running" -- passed straight to <calcite-icon icon="..."> in the legend. */
+  calciteIcon: string;
+  /** Raw SVG source of that icon (24px viewBox), for building the map-marker badge. */
+  svg: string;
+}
+
+const POI_FALLBACK_ICON: PoiIconInfo = { calciteIcon: "pin-tear", svg: pinTearIconSvg };
+
+const POI_ICON_KEYWORD_GROUPS: { keywords: string[]; icon: PoiIconInfo }[] = [
+  // No matching Calcite icon exists for dining or worship -- see the note
+  // above the icon imports. Both intentionally fall through to the
+  // generic "pin-tear" fallback at the bottom of categoryIcon() rather
+  // than being listed here with a mismatched glyph.
+  { keywords: ["sports center", "sports centre", "gym", "fitness"], icon: { calciteIcon: "running", svg: runningIconSvg } },
+  { keywords: ["residential accommodation", "hotel", "lodging", "apartment"], icon: { calciteIcon: "home", svg: homeIconSvg } },
+  { keywords: ["market", "grocery", "supermarket"], icon: { calciteIcon: "marketplace", svg: marketplaceIconSvg } },
+  { keywords: ["department store", "shop", "shopping center", "shopping centre", "retail", "clothing", "footwear", "apparel"], icon: { calciteIcon: "shopping-cart", svg: shoppingCartIconSvg } },
+  { keywords: ["hospital", "clinic", "pharmacy", "medical", "health"], icon: { calciteIcon: "medical", svg: medicalIconSvg } },
+  { keywords: ["school", "college", "university", "education"], icon: { calciteIcon: "education", svg: educationIconSvg } },
+  { keywords: ["bank", "atm", "finance"], icon: { calciteIcon: "money", svg: moneyIconSvg } },
+  { keywords: ["government", "civic", "municipal", "post office"], icon: { calciteIcon: "government-building", svg: governmentBuildingIconSvg } },
+  { keywords: ["park", "garden"], icon: { calciteIcon: "tree", svg: treeIconSvg } },
+  { keywords: ["bus", "transport", "transit"], icon: { calciteIcon: "bus", svg: busIconSvg } },
+  { keywords: ["fuel", "gas station", "parking", "automotive"], icon: { calciteIcon: "car", svg: carIconSvg } },
+  { keywords: ["library", "book store", "bookstore"], icon: { calciteIcon: "book", svg: bookIconSvg } },
+];
+
+function categoryIcon(category: string): PoiIconInfo {
+  const lower = category.toLowerCase();
+  const match = POI_ICON_KEYWORD_GROUPS.find((group) => group.keywords.some((k) => lower.includes(k)));
+  return match?.icon ?? POI_FALLBACK_ICON;
+}
+
+// Builds a small colored circular badge with the category's icon glyph
+// centered inside it, encoded as a data: URI -- used as a
+// PictureMarkerSymbol's url so POI points render as recognizable icons
+// on the map instead of flat colored dots. Reuses the glyph's own <path>
+// data as-is (stripping Calcite's invisible no-op bounding-box path and
+// its own <svg> wrapper), just recolored white via the wrapping <g>.
+// A plain object rather than the built-in generic Map here -- this
+// module already imports the ArcGIS SDK's own `Map` class as the default
+// export of "@arcgis/core/Map" (for the scene/2D maps' basemap+layers),
+// which shadows the global `Map<K, V>` collection type for the rest of
+// this file.
+const poiMarkerUriCache: Record<string, string> = {};
+
+function poiMarkerDataUri(category: string): string {
+  const color = categoryColor(category);
+  const icon = categoryIcon(category);
+  const cacheKey = `${color}|${icon.calciteIcon}`;
+  const cached = poiMarkerUriCache[cacheKey];
+  if (cached) return cached;
+
+  const glyphPaths = Array.from(icon.svg.matchAll(/<path[^>]*\/>/g))
+    .map((m) => m[0])
+    .filter((p) => !p.includes('fill="none"'));
+
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="34" height="34" viewBox="0 0 34 34">` +
+    `<circle cx="17" cy="17" r="15" fill="${color}" stroke="#ffffff" stroke-width="2"/>` +
+    `<g transform="translate(8,8) scale(0.75)" fill="#ffffff">${glyphPaths.join("")}</g>` +
+    `</svg>`;
+
+  const uri = `data:image/svg+xml,${encodeURIComponent(svg)}`;
+  poiMarkerUriCache[cacheKey] = uri;
+  return uri;
+}
+
+// Icon-badge equivalent of pointGraphic(), used only for POI points --
+// the KPN store marker and the plain selected-location dot (pointGraphic
+// itself) are untouched.
+function poiIconGraphic(
+  x: number,
+  y: number,
+  category: string,
+  attributes?: Record<string, any>,
+  popupTemplate?: __esri.PopupTemplateProperties
+) {
+  return new Graphic({
+    geometry: { type: "point", x, y, spatialReference: { wkid: 4326 } } as any,
+    symbol: new PictureMarkerSymbol({ url: poiMarkerDataUri(category), width: 22, height: 22 }),
+    attributes,
+    popupTemplate: popupTemplate as any,
+  });
+}
+
 // --- Pickers --------------------------------------------------------
 
 function buildVariablePanel(): string {
@@ -371,15 +490,29 @@ async function buildPoiPicker(container: HTMLElement) {
   }
   container.innerHTML = `
     <calcite-block heading="Nearby places" description="Choose which categories to fetch from your uploaded POI layer — each shows up as its own toggleable, color-coded layer on the map" collapsible open>
+      <div class="var-picker-actions">
+        <calcite-button appearance="outline" scale="s" id="select-all-pois">Select all</calcite-button>
+        <calcite-button appearance="outline" scale="s" id="select-none-pois">Select none</calcite-button>
+      </div>
       ${categories.map((cat, i) => `
         <calcite-label layout="inline" class="poi-checkbox-label">
           <calcite-checkbox class="poi-checkbox" data-index="${i}" ${isDefaultPoiCategory(cat) ? "checked" : ""}></calcite-checkbox>
-          <span class="poi-swatch" style="background:${categoryColor(cat)}"></span>
+          <calcite-icon class="poi-icon-swatch" icon="${categoryIcon(cat).calciteIcon}" scale="s" style="color:${categoryColor(cat)}"></calcite-icon>
           ${cat}
         </calcite-label>
       `).join("")}
     </calcite-block>
   `;
+
+  // Wired here (rather than in renderApp) since this container's markup
+  // is replaced by this function, asynchronously, well after renderApp's
+  // own querySelectors would have run against the "Loading..." placeholder.
+  container.querySelector("#select-all-pois")?.addEventListener("click", () => {
+    container.querySelectorAll<any>(".poi-checkbox").forEach((cb) => (cb.checked = true));
+  });
+  container.querySelector("#select-none-pois")?.addEventListener("click", () => {
+    container.querySelectorAll<any>(".poi-checkbox").forEach((cb) => (cb.checked = false));
+  });
 }
 
 function getSelectedPoiCategories(root: HTMLElement): string[] {
@@ -509,7 +642,9 @@ export function renderApp(root: HTMLElement) {
   });
 }
 
-const CACHE_VERSION = "v13";
+// Bumped -- PoiResult now carries a `brand` field the older cached bundles
+// don't have, which the new brand-dropdown feature needs.
+const CACHE_VERSION = "v14";
 
 async function runSearch(
   location: PocLocation,
@@ -678,6 +813,60 @@ function catchmentGraphic(
   });
 }
 
+// Determines which numeric field the population layer's own published
+// renderer already classifies on, so applyGreenPopulationRenderer (below)
+// can reapply the same classification with a different color ramp
+// without hardcoding a field name that can't be independently verified
+// from this sandbox (same category of blocker as the POI Brand Name
+// field in services/poi.ts).
+function inferColorField(layer: FeatureLayer): string | null {
+  const renderer = layer.renderer as any;
+  if (!renderer) return null;
+  if (typeof renderer.field === "string" && renderer.field) return renderer.field;
+  const colorVariable = (renderer.visualVariables as any[] | undefined)?.find(
+    (v) => v?.type === "color" && typeof v.field === "string"
+  );
+  return colorVariable?.field ?? null;
+}
+
+// Applies Esri's built-in "Green 5" smart-mapping color ramp to the
+// population hex-grid layer. This is also the fix for a style edit made
+// on the hosted layer not showing up on the map: FeatureLayer.load() only
+// ever reads a layer's own default renderer, and a style change made in
+// the ArcGIS Online map viewer's "Styles" pane is usually saved to that
+// *web map's* layer entry, not to the hosted layer's own default renderer
+// -- so it can look saved there while never actually changing what a
+// fresh FeatureLayer(url) picks up. Setting the renderer explicitly here,
+// client-side, means this map's colors no longer depend on that at all.
+async function applyGreenPopulationRenderer(layer: FeatureLayer, view: MapView) {
+  const field = inferColorField(layer);
+  if (!field) {
+    console.error("Could not determine which field the population layer is classified on -- leaving its published renderer as-is.", layer.url);
+    return;
+  }
+  try {
+    const colorScheme = colorSchemes.getSchemeByName({
+      name: "Green 5",
+      geometryType: (layer.geometryType as any) ?? "polygon",
+      theme: "high-to-low",
+    });
+    if (!colorScheme) {
+      console.error('The "Green 5" color scheme was not found in this SDK version\'s smart-mapping catalog.');
+      return;
+    }
+    const { renderer } = await colorRendererCreator.createContinuousRenderer({
+      layer,
+      view,
+      field,
+      theme: "high-to-low",
+      colorScheme,
+    });
+    layer.renderer = renderer;
+  } catch (err) {
+    console.error("Failed to apply the Green 5 renderer to the population layer:", err, { field, url: layer.url });
+  }
+}
+
 async function createMiniMap(
   container: HTMLDivElement,
   x: number,
@@ -687,7 +876,11 @@ async function createMiniMap(
   populationLayerUrl?: string
 ) {
   const layer = new GraphicsLayer();
-  if (catchment) layer.add(catchmentGraphic(x, y, catchment));
+  // Border-only on this mini map specifically -- no inner fill -- so the
+  // population layer's own gradient underneath reads clearly. createBigMap
+  // still draws its own catchment fills (unaffected: it calls
+  // catchmentGraphic with its own explicit fill colors, not this default).
+  if (catchment) layer.add(catchmentGraphic(x, y, catchment, "#0f6e56", [15, 110, 86, 0]));
   layer.add(storePoint ? kpnStoreGraphic(storePoint.x, storePoint.y) : pointGraphic(x, y));
 
   // Population gradient (H10 hex grid) layer for this location -- same
@@ -720,6 +913,10 @@ async function createMiniMap(
   miniViews.push(view);
   await view.when();
   if (catchment) await view.goTo(layer.graphics.toArray(), { animate: false });
+
+  if (populationLayer) {
+    await applyGreenPopulationRenderer(populationLayer, view);
+  }
 
   // Clip the population layer to just this catchment's shape -- the
   // uploaded hex grid covers a much larger area than any single 5-min
@@ -797,14 +994,13 @@ async function createBigMap(
   // catchment should be plotted on the map itself.
   const poiLayers = Object.entries(poiByCategory).map(([category, pois]) => {
     const layer = new GraphicsLayer({ title: category, visible: false });
-    const color = categoryColor(category);
     pois
       .filter((p) => catchmentContains(driveSection.catchment, x, y, p.x, p.y))
       .forEach((p) =>
         layer.add(
-          pointGraphic(p.x, p.y, color, { name: p.name, category: p.category, description: p.description }, {
+          poiIconGraphic(p.x, p.y, category, { name: p.name, category: p.category, description: p.description, brand: p.brand }, {
             title: "{name}",
-            content: "Category: {category}<br>Type: {description}",
+            content: p.brand ? "Category: {category}<br>Type: {description}<br>Brand: {brand}" : "Category: {category}<br>Type: {description}",
           })
         )
       );
@@ -995,14 +1191,17 @@ async function createBigMap(
     // trafficLayer.visible would turn both regions off together, and this
     // app's India traffic sublayers are separate from this group entirely.
     const asiaPacificIncidents = trafficLayer?.findSublayerById(45) ?? null;
-    const legendRows: { title: string; color: string; symbol?: CIMSymbol; layer: GraphicsLayer | FeatureLayer | MapImageLayer | Sublayer }[] = [
+    const legendRows: { title: string; color: string; symbol?: CIMSymbol; icon?: string; layer: GraphicsLayer | FeatureLayer | MapImageLayer | Sublayer }[] = [
       { title: "KPN Fresh", color: "#bada55", symbol: kpnStoreCimSymbol(), layer: centerLayer },
       ...(suitabilityLayer ? [{ title: "Suitability analysis", color: "#2f7d32", layer: suitabilityLayer }] : []),
       { title: driveLayer.title as string, color: "#378add", layer: driveLayer },
       { title: walkLayer.title as string, color: "#0f6e56", layer: walkLayer },
       ...(trafficLayer ? [{ title: "Live traffic (India)", color: "#e08b2f", layer: trafficLayer }] : []),
       ...(asiaPacificIncidents ? [{ title: "Traffic incidents (Asia Pacific)", color: "#d85a30", layer: asiaPacificIncidents }] : []),
-      ...poiLayers.map((l) => ({ title: l.title as string, color: categoryColor(l.title as string), layer: l })),
+      // Same Calcite icon glyph shown here as on the map markers themselves
+      // (poiIconGraphic/poiMarkerDataUri), so a category is identifiable
+      // the same way in both places.
+      ...poiLayers.map((l) => ({ title: l.title as string, color: categoryColor(l.title as string), icon: categoryIcon(l.title as string).calciteIcon, layer: l })),
     ];
     // Checkbox state mirrors each layer's actual default `visible` --
     // true for everything above, false for the POI layers -- rather than
@@ -1013,7 +1212,9 @@ async function createBigMap(
         ${legendRows.map((r, i) => `
           <label class="fake-legend__row">
             <input type="checkbox" class="map-legend__toggle" data-layer-index="${i}" ${r.layer.visible ? "checked" : ""}>
-            <span class="fake-legend__swatch" data-swatch-index="${i}" style="background:${r.symbol ? "transparent" : r.color}"></span>
+            ${r.icon
+              ? `<calcite-icon class="fake-legend__icon" icon="${r.icon}" scale="s" style="color:${r.color}"></calcite-icon>`
+              : `<span class="fake-legend__swatch" data-swatch-index="${i}" style="background:${r.symbol ? "transparent" : r.color}"></span>`}
             ${r.title}
           </label>
         `).join("")}
@@ -1306,11 +1507,31 @@ async function renderResults(root: HTMLDivElement, data: any) {
   // independent of the (now much larger) suitability-extent geometry they
   // were actually queried against.
   const poiCountRows = Object.entries(poiByCategory)
-    .map(([category, pois]) => ({
-      category,
-      driveCount: pois.filter((p) => catchmentContains(driveSection.catchment, x, y, p.x, p.y)).length,
-      walkCount: pois.filter((p) => catchmentContains(walkSection.catchment, x, y, p.x, p.y)).length,
-    }))
+    .map(([category, pois]) => {
+      const drivePois = pois.filter((p) => catchmentContains(driveSection.catchment, x, y, p.x, p.y));
+      const walkPois = pois.filter((p) => catchmentContains(walkSection.catchment, x, y, p.x, p.y));
+
+      // Only categories where at least one fetched POI actually carries a
+      // brand -- everything else keeps the old plain (non-expandable) row,
+      // rather than showing an empty/"all Other" dropdown for every category.
+      const brandNames = Array.from(new Set(pois.map((p) => p.brand).filter((b): b is string => !!b))).sort();
+      const brandRows = brandNames.map((brand) => ({
+        brand,
+        driveCount: drivePois.filter((p) => p.brand === brand).length,
+        walkCount: walkPois.filter((p) => p.brand === brand).length,
+      }));
+      // Non-branded POIs in this category, so brandRows (+ Other) always
+      // sums back to driveCount/walkCount exactly.
+      if (brandRows.length > 0) {
+        brandRows.push({
+          brand: "Other",
+          driveCount: drivePois.filter((p) => !p.brand).length,
+          walkCount: walkPois.filter((p) => !p.brand).length,
+        });
+      }
+
+      return { category, driveCount: drivePois.length, walkCount: walkPois.length, brandRows };
+    })
     .sort((a, b) => b.driveCount + b.walkCount - (a.driveCount + a.walkCount));
 
   const poiCountTableHtml = poiCountRows.length
@@ -1325,12 +1546,31 @@ async function renderResults(root: HTMLDivElement, data: any) {
           <tbody>
             ${poiCountRows
               .map(
-                (r) => `
-              <tr>
-                <td><span class="poi-swatch" style="background:${categoryColor(r.category)}"></span>${r.category}</td>
+                (r, i) => `
+              <tr class="poi-count-row${r.brandRows.length ? " poi-count-row--expandable" : ""}" data-toggle-index="${i}">
+                <td>
+                  ${r.brandRows.length ? `<calcite-icon class="poi-count-chevron" icon="chevron-right" scale="s"></calcite-icon>` : ""}
+                  <span class="poi-swatch" style="background:${categoryColor(r.category)}"></span>${r.category}
+                </td>
                 <td>${formatInt(r.driveCount)}</td>
                 <td>${formatInt(r.walkCount)}</td>
               </tr>
+              ${
+                r.brandRows.length
+                  ? `
+              <tr class="poi-brand-rows" data-toggle-index="${i}" hidden>
+                <td colspan="3">
+                  <table class="poi-brand-table">
+                    <tbody>
+                      ${r.brandRows
+                        .map((b) => `<tr><td>${b.brand}</td><td>${formatInt(b.driveCount)}</td><td>${formatInt(b.walkCount)}</td></tr>`)
+                        .join("")}
+                    </tbody>
+                  </table>
+                </td>
+              </tr>`
+                  : ""
+              }
             `
               )
               .join("")}
@@ -1368,6 +1608,20 @@ async function renderResults(root: HTMLDivElement, data: any) {
       </div>
     </div>
   `;
+
+  // Brand-breakdown dropdown toggles for the POI count table -- each
+  // expandable category row reveals/hides its sibling brand-rows tr.
+  root.querySelectorAll<HTMLTableRowElement>(".poi-count-row--expandable").forEach((row) => {
+    row.addEventListener("click", () => {
+      const idx = row.dataset.toggleIndex;
+      const detail = root.querySelector<HTMLTableRowElement>(`.poi-brand-rows[data-toggle-index="${idx}"]`);
+      const chevron = row.querySelector<HTMLElement>(".poi-count-chevron");
+      if (!detail) return;
+      const willShow = detail.hidden;
+      detail.hidden = !willShow;
+      chevron?.setAttribute("icon", willShow ? "chevron-down" : "chevron-right");
+    });
+  });
 
   const leftCol = root.querySelector("#top-panel-left") as HTMLDivElement;
 
@@ -1408,10 +1662,11 @@ async function renderResults(root: HTMLDivElement, data: any) {
   // progressively in the background like any other scene layer, so it's
   // just added here rather than awaited before the view is usable.
   const buildingsLayer = new SceneLayer({ url: BUILDINGS_3D_URL, title: "3D Buildings" });
+  const sceneMap = new Map({ basemap: "arcgis/imagery", ground: "world-elevation", layers: [buildingsLayer, sceneLayer] });
   restrictWheelZoomToCtrl(sceneDiv);
   currentSceneView = new SceneView({
     container: sceneDiv,
-    map: new Map({ basemap: "arcgis/imagery", ground: "world-elevation", layers: [buildingsLayer, sceneLayer] }),
+    map: sceneMap,
     ui: { components: ["attribution"] },
   });
   await currentSceneView.when();
@@ -1423,8 +1678,31 @@ async function renderResults(root: HTMLDivElement, data: any) {
   // after the view (and its ground) is ready, keeps it centered
   // regardless of terrain -- and guarantees the target matches the dot
   // exactly, rather than a second, separately-typed point literal.
+  //
+  // That's still an un-elevated (z-less) point, though -- goTo has to
+  // clamp it to the ground surface itself, and for at least one site
+  // (Sreemoolanagaram) that implicit clamp landed off from where the
+  // marker actually draws, most likely because goTo ran a hair ahead of
+  // that spot's real terrain tile finishing its load, leaving it framed
+  // against whatever (wrong) elevation was in at that instant. Querying
+  // the real ground elevation explicitly first and going to that already-
+  // elevated point removes the guesswork -- applied to every location,
+  // since the exact terrain-timing condition can't be reproduced or
+  // confirmed from this sandbox (no live network access to the terrain
+  // service), so this is the safe fix either way: elsewhere it's a no-op
+  // (the elevated point sits wherever the un-elevated one already did).
+  let goToTarget: __esri.Point = centerGraphic.geometry as __esri.Point;
+  try {
+    const ground = sceneMap.ground;
+    const elevationResult = await ground.queryElevation(goToTarget);
+    if (elevationResult?.geometry) {
+      goToTarget = elevationResult.geometry as __esri.Point;
+    }
+  } catch (err) {
+    console.error("Ground elevation query failed for the scene view's initial camera target -- falling back to the un-elevated point:", err, locationName);
+  }
   await currentSceneView.goTo(
-    { target: centerGraphic.geometry, scale: 2000, tilt: 60 },
+    { target: goToTarget, scale: 2000, tilt: 60 },
     { animate: false }
   );
 

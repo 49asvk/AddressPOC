@@ -12,14 +12,60 @@ export const POI_LAYER_URL = "https://services7.arcgis.com/8phUg7DrlXpKgLyA/arcg
 // instead of listing every one of the ~100 individually.
 const DESC_FIELD = "ESRI_INDIA_CATEGORY_DESC";
 
+// Field storing each POI's brand/chain name (e.g. "Dominos", "Reliance
+// Trends"), null/empty for independent, non-branded POIs -- this is what
+// the brand-wise breakdown in the POI count table groups on. NOTE: this
+// field name has NOT been verified against the live layer (this app was
+// built in a sandbox that can't reach services7.arcgis.com -- it's
+// blocked outbound, and a direct fetch of this layer's own ?f=json
+// definition hit a "Token Required" auth wall). Confirm/correct this
+// against the layer's actual field list. If it's wrong, the queries below
+// automatically detect that and fall back to querying without it (see
+// executeQueryWithBrandFallback), so a wrong guess here degrades to
+// "everything shows as Other" rather than breaking POI fetching entirely.
+const BRAND_FIELD = "BRAND_NAME";
+
 export interface PoiResult {
   name: string;
   /** Main category, e.g. "Restaurant" -- what the layer/legend/color is keyed on. */
   category: string;
   /** Full sub-category as stored on the feature, e.g. "Restaurant-Indian". */
   description: string;
+  /** Brand/chain name, or null for an independent (non-branded) POI. */
+  brand: string | null;
   x: number;
   y: number;
+}
+
+// Once a query against BRAND_FIELD fails (most likely because the field
+// name above is wrong), every later query in the session stops asking for
+// it too -- there's no point re-failing the same request over and over,
+// and this keeps a bad field name from doubling every query's round trips.
+let brandFieldKnownBad = false;
+
+async function executeQueryWithBrandFallback(q: Query): Promise<{ features: __esri.Graphic[]; brandFieldUsed: boolean }> {
+  const tryBrand = !brandFieldKnownBad;
+  q.outFields = tryBrand ? ["NAME", DESC_FIELD, BRAND_FIELD] : ["NAME", DESC_FIELD];
+  try {
+    const result = await query.executeQueryJSON(POI_LAYER_URL, q);
+    return { features: result.features, brandFieldUsed: tryBrand };
+  } catch (err) {
+    if (!tryBrand) throw err;
+    console.error(
+      `POI query with BRAND_FIELD ("${BRAND_FIELD}") failed -- confirm the real Brand Name field on the KPN_POIs_15min layer in services/poi.ts. Falling back to querying without it for the rest of this session.`,
+      err
+    );
+    brandFieldKnownBad = true;
+    q.outFields = ["NAME", DESC_FIELD];
+    const result = await query.executeQueryJSON(POI_LAYER_URL, q);
+    return { features: result.features, brandFieldUsed: false };
+  }
+}
+
+function brandOf(attributes: Record<string, any>, brandFieldUsed: boolean): string | null {
+  if (!brandFieldUsed) return null;
+  const raw = attributes[BRAND_FIELD];
+  return typeof raw === "string" && raw.trim() ? raw.trim() : null;
 }
 
 function mainCategoryOf(desc: string): string {
@@ -84,14 +130,13 @@ export async function queryNearbyPois(
   const q = new Query({
     ...geometryParams,
     where: `${DESC_FIELD} LIKE '${escaped}-%'`,
-    outFields: ["NAME", DESC_FIELD],
     returnGeometry: true,
     outSpatialReference: { wkid: 4326 } as any,
   });
 
-  const result = await query.executeQueryJSON(POI_LAYER_URL, q);
+  const { features, brandFieldUsed } = await executeQueryWithBrandFallback(q);
 
-  return result.features
+  return features
     .map((f) => {
       const pt = f.geometry as __esri.Point;
       const description = (f.attributes[DESC_FIELD] as string) || mainCategory;
@@ -99,6 +144,7 @@ export async function queryNearbyPois(
         name: (f.attributes.NAME as string) || description,
         category: mainCategory,
         description,
+        brand: brandOf(f.attributes, brandFieldUsed),
         x: pt?.x,
         y: pt?.y,
       };
@@ -118,14 +164,13 @@ export async function queryPoisInGeometry(geometry: __esri.Geometry, mainCategor
     geometry: geometry as any,
     spatialRelationship: "intersects",
     where: `${DESC_FIELD} LIKE '${escaped}-%'`,
-    outFields: ["NAME", DESC_FIELD],
     returnGeometry: true,
     outSpatialReference: { wkid: 4326 } as any,
   });
 
-  const result = await query.executeQueryJSON(POI_LAYER_URL, q);
+  const { features, brandFieldUsed } = await executeQueryWithBrandFallback(q);
 
-  return result.features
+  return features
     .map((f) => {
       const pt = f.geometry as __esri.Point;
       const description = (f.attributes[DESC_FIELD] as string) || mainCategory;
@@ -133,6 +178,7 @@ export async function queryPoisInGeometry(geometry: __esri.Geometry, mainCategor
         name: (f.attributes.NAME as string) || description,
         category: mainCategory,
         description,
+        brand: brandOf(f.attributes, brandFieldUsed),
         x: pt?.x,
         y: pt?.y,
       };

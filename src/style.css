@@ -65,6 +65,14 @@ body { margin: 0; font-family: system-ui, sans-serif; background: #f4f3ef; }
 .traffic-map-card .ai-card__body { flex: 1; min-height: 0; padding: 0; position: relative; }
 
 .poi-swatch { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin: 0 2px; }
+.poi-icon-swatch { margin: 0 4px 0 2px; vertical-align: -3px; }
+
+.poi-count-row--expandable { cursor: pointer; }
+.poi-count-row--expandable:hover { background: #f7f7f5; }
+.poi-count-chevron { margin-right: 4px; vertical-align: -3px; }
+.poi-brand-table { width: 100%; margin: 2px 0 6px 22px; font-size: 12px; border-collapse: collapse; }
+.poi-brand-table td { padding: 3px 10px; color: #555; }
+.poi-brand-table td:not(:first-child) { text-align: right; font-variant-numeric: tabular-nums; }
 
 /* .ai-card sets width:100% (content-box), so adding left/right margin on
    top of that pushes this card wider than its parent and triggers a
@@ -128,6 +136,7 @@ body { margin: 0; font-family: system-ui, sans-serif; background: #f4f3ef; }
 
 .fake-legend__row { display: flex; align-items: center; gap: 6px; padding: 3px 0; }
 .fake-legend__swatch { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
+.fake-legend__icon { flex-shrink: 0; }
 
 .fake-pyramid__row { display: flex; align-items: center; height: 14px; margin: 3px 0; }
 .fake-pyramid__bar { height: 10px; background: #378add; }
