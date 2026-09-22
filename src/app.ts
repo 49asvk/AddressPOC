@@ -1666,7 +1666,7 @@ async function renderResults(root: HTMLDivElement, data: any) {
   restrictWheelZoomToCtrl(sceneDiv);
   currentSceneView = new SceneView({
     container: sceneDiv,
-    map: sceneMap,
+    map: new Map({ basemap: "arcgis/imagery", ground: "world-elevation", layers: [buildingsLayer, sceneLayer] }),
     ui: { components: ["attribution"] },
   });
   await currentSceneView.when();
