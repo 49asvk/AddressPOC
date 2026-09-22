@@ -4,6 +4,7 @@ import Map from "@arcgis/core/Map";
 import GraphicsLayer from "@arcgis/core/layers/GraphicsLayer";
 import FeatureLayer from "@arcgis/core/layers/FeatureLayer";
 import MapImageLayer from "@arcgis/core/layers/MapImageLayer";
+import type Sublayer from "@arcgis/core/layers/support/Sublayer";
 import SceneLayer from "@arcgis/core/layers/SceneLayer";
 import FeatureFilter from "@arcgis/core/layers/support/FeatureFilter";
 import Graphic from "@arcgis/core/Graphic";
@@ -50,6 +51,38 @@ const TRAFFIC_SERVICE_URL = "https://utility.arcgis.com/usrsvcs/servers/148a7ab5
 // imagery basemap with a marker floating over it.
 const BUILDINGS_3D_URL = "https://basemaps3d.arcgis.com/arcgis/rest/services/Esri3D_Buildings_v1/SceneServer";
 
+// By default every ArcGIS view zooms on any mouse-wheel scroll, which
+// fights with just scrolling the page past an embedded map -- the wheel
+// gets caught by whichever map happens to be under the cursor instead of
+// scrolling the page. There's no built-in "only zoom with a modifier key"
+// setting on view.navigation, so this is done by hand: a capture-phase
+// listener on the view's own container div, added here so it always sits
+// above (runs before) the view's own internal wheel handling regardless
+// of call order, since capture-phase events visit ancestors before the
+// descendant elements a view attaches its own listeners to. When Ctrl
+// isn't held, stopping propagation here keeps the event from ever
+// reaching the view, so it neither zooms nor calls preventDefault, and
+// the browser's normal page-scroll behavior proceeds untouched. When
+// Ctrl is held, nothing is done and the view zooms exactly as it always
+// did (including its own preventDefault, which already stops the
+// browser's separate ctrl+wheel page-zoom).
+function restrictWheelZoomToCtrl(container: HTMLDivElement) {
+  container.addEventListener(
+    "wheel",
+    (event) => {
+      if (!event.ctrlKey) event.stopPropagation();
+    },
+    { capture: true }
+  );
+}
+
+// Point sublayers (incidents) get the service's default popup explicitly
+// built and assigned below -- Sublayer, unlike FeatureLayer, doesn't
+// auto-generate one just from popupEnabled defaulting true, so without
+// this clicking an incident wouldn't show anything. Road closures (the
+// polyline sublayers) get the same treatment for consistency.
+const ASIA_PACIFIC_INCIDENT_SUBLAYER_IDS = [46, 47, 48, 61, 62, 63];
+
 async function createTrafficLayer(): Promise<MapImageLayer | null> {
   try {
     const layer = new MapImageLayer({
@@ -72,9 +105,47 @@ async function createTrafficLayer(): Promise<MapImageLayer | null> {
             },
           ],
         },
+        {
+          id: 40, // Asia Pacific (group)
+          visible: true,
+          sublayers: [
+            {
+              // Asia Pacific Traffic Incidents (group) -- toggled as one
+              // unit from the traffic map's legend panel below. Only this
+              // group (id 45) is included, not its sibling id 41 (Asia
+              // Pacific traffic flow speed) -- the ask was incident data.
+              id: 45,
+              visible: true,
+              sublayers: [
+                // Overview incidents/closures only draw out past a very
+                // small (country-level) scale -- left off, matching the
+                // service's own defaultVisibility, since this app is
+                // always framed to a local catchment, never that zoomed out.
+                { id: 46, visible: false }, // Traffic Incidents Overview
+                { id: 61, visible: false }, // Road Closures Overview
+                { id: 47, visible: true }, // Traffic Incidents Intermediate
+                { id: 62, visible: true }, // Road Closures Intermediate
+                { id: 48, visible: true }, // Traffic Incidents Detailed
+                { id: 63, visible: true }, // Road Closures Detailed
+              ],
+            },
+          ],
+        },
       ],
     } as any);
     await layer.load();
+
+    for (const id of ASIA_PACIFIC_INCIDENT_SUBLAYER_IDS) {
+      const sublayer = layer.findSublayerById(id);
+      if (!sublayer) continue;
+      try {
+        await sublayer.load();
+        sublayer.popupTemplate = sublayer.createPopupTemplate();
+      } catch (err) {
+        console.error(`Failed to build the default popup for traffic sublayer ${id}:`, err);
+      }
+    }
+
     return layer;
   } catch (err) {
     console.error("Traffic layer failed to load -- check TRAFFIC_SERVICE_URL:", err);
@@ -274,7 +345,7 @@ function buildVariablePanel(): string {
         <calcite-block heading="${c.label}" collapsible>
           ${c.variables.map((v) => `
             <calcite-label layout="inline" class="var-checkbox-label">
-                            <calcite-checkbox class="var-checkbox" data-key="${v.sourceCollectionId ?? c.collectionId}.${v.id}" checked></calcite-checkbox>
+              <calcite-checkbox class="var-checkbox" data-key="${v.sourceCollectionId ?? c.collectionId}.${v.id}" checked></calcite-checkbox>
               ${v.label}
             </calcite-label>
           `).join("")}
@@ -634,9 +705,13 @@ async function createMiniMap(
     }
   }
 
+  restrictWheelZoomToCtrl(container);
   const view = new MapView({
     container,
-    map: new Map({ basemap: "arcgis/streets", layers: [...(populationLayer ? [populationLayer] : []), layer] }),
+    // Dark Gray Canvas instead of Streets -- the population hex-grid's own
+    // color ramp reads much more clearly against a muted dark basemap than
+    // against Streets' busy, light road/label styling.
+    map: new Map({ basemap: "arcgis/dark-gray", layers: [...(populationLayer ? [populationLayer] : []), layer] }),
     center: [x, y],
     zoom: 15,
     constraints: { rotationEnabled: false },
@@ -714,6 +789,7 @@ async function createBigMap(
   // marker -- stay on by default; every POI category layer starts
   // switched off (fetched, but not shown) until the person checks it in
   // the legend.
+  //
   // POIs are scoped to the 5min drive-time catchment specifically (not
   // the 10min walk one) -- this mirrors the "Nearby places" count table,
   // which counts drive-catchment hits into its own column, and matches
@@ -781,6 +857,7 @@ async function createBigMap(
   // stay visible on top of it, traffic (when present) draws above that
   // as road lines, POIs draw above that as discrete points, and the
   // location marker stays on top of everything.
+  restrictWheelZoomToCtrl(container);
   const view = new MapView({
     container,
     map: new Map({
@@ -802,6 +879,7 @@ async function createBigMap(
 
   const fitGraphics = [...driveLayer.graphics.toArray(), ...walkLayer.graphics.toArray()];
   await view.goTo(fitGraphics, { animate: false }).catch(() => {});
+
   // Clip the suitability layer to the 5min drive-time catchment. The
   // suitability grid was published for a whole candidate-site area, which
   // can extend past (or fall short of) the drive-time polygon solved live
@@ -912,12 +990,18 @@ async function createBigMap(
     // KPN Fresh is listed first -- always on top, both in this list and
     // (via the `layers` array above, where centerLayer is last) on the
     // map itself.
-    const legendRows: { title: string; color: string; symbol?: CIMSymbol; layer: GraphicsLayer | FeatureLayer | MapImageLayer }[] = [
+    // The Asia Pacific incidents+closures group (sublayer 45) toggles as
+    // one row, independent of the "Live traffic (India)" row -- toggling
+    // trafficLayer.visible would turn both regions off together, and this
+    // app's India traffic sublayers are separate from this group entirely.
+    const asiaPacificIncidents = trafficLayer?.findSublayerById(45) ?? null;
+    const legendRows: { title: string; color: string; symbol?: CIMSymbol; layer: GraphicsLayer | FeatureLayer | MapImageLayer | Sublayer }[] = [
       { title: "KPN Fresh", color: "#bada55", symbol: kpnStoreCimSymbol(), layer: centerLayer },
       ...(suitabilityLayer ? [{ title: "Suitability analysis", color: "#2f7d32", layer: suitabilityLayer }] : []),
       { title: driveLayer.title as string, color: "#378add", layer: driveLayer },
       { title: walkLayer.title as string, color: "#0f6e56", layer: walkLayer },
       ...(trafficLayer ? [{ title: "Live traffic (India)", color: "#e08b2f", layer: trafficLayer }] : []),
+      ...(asiaPacificIncidents ? [{ title: "Traffic incidents (Asia Pacific)", color: "#d85a30", layer: asiaPacificIncidents }] : []),
       ...poiLayers.map((l) => ({ title: l.title as string, color: categoryColor(l.title as string), layer: l })),
     ];
     // Checkbox state mirrors each layer's actual default `visible` --
@@ -1118,12 +1202,13 @@ function buildConsumerStylesDonut(enrichment: Record<string, any>): { body: stri
   return { body, wire };
 }
 
-// Every Purchasing Power + Spending (BA) variable in one plain table --
-// label/value rows via the existing `.ai-card table` styling (same
-// left/right-aligned two-column look used elsewhere in the app), rather
-// than a hero stat plus a handful of loose rows.
-function buildIncomeTable(enrichment: Record<string, any>): string | null {
-  const rows = [...purchasingPowerCollection.variables, ...spendingCollection.variables]
+// Shared by the Income-based analysis and Consumer spending cards below --
+// every variable in the given collection, as plain label/value rows via
+// the existing `.ai-card table` styling (same left/right-aligned
+// two-column look used elsewhere in the app), rather than a hero stat
+// plus a handful of loose rows.
+function buildVariableTable(variables: { id: string; label: string; unit?: "currency" }[], enrichment: Record<string, any>): string | null {
+  const rows = variables
     .filter((v) => v.id in enrichment)
     .map((v) => `<tr><td>${v.label}</td><td>${formatFieldValue(enrichment[v.id], v.unit)}</td></tr>`)
     .join("");
@@ -1152,10 +1237,15 @@ function buildDemographicCards(enrichment: Record<string, any> | null): { kind: 
   const pyramidHtml = buildAgePyramid(enrichment);
   if (pyramidHtml) cards.push({ kind: "teal", title: "Age-group segmentation", body: pyramidHtml });
 
-  // Income + spending (every Purchasing Power and Spending BA variable),
-  // as one plain table rather than a hero stat with loose rows.
-  const incomeTableHtml = buildIncomeTable(enrichment);
+  // Income (Purchasing Power) and Spending are two separate cards -- each
+  // is its own GeoEnrichment collection with its own set of variables, and
+  // Spending now carries all 20 categories, so combining them into one
+  // card made an already-long table even harder to scan.
+  const incomeTableHtml = buildVariableTable(purchasingPowerCollection.variables, enrichment);
   if (incomeTableHtml) cards.push({ kind: "teal", title: "Income-based analysis", body: incomeTableHtml });
+
+  const spendingTableHtml = buildVariableTable(spendingCollection.variables, enrichment);
+  if (spendingTableHtml) cards.push({ kind: "teal", title: "Consumer spending", body: spendingTableHtml });
 
   if (cards.length === 0) {
     return [{ kind: "teal", title: "Demographics", body: `<div class="ai-card__stat-label">No data returned for the selected variables in this catchment.</div>` }];
@@ -1302,12 +1392,23 @@ async function renderResults(root: HTMLDivElement, data: any) {
   }
 
   const centerGraphic = kpnStorePoint ? kpnStoreGraphic(kpnStorePoint.x, kpnStorePoint.y) : pointGraphic(x, y);
-  const sceneLayer = new GraphicsLayer();
+  const sceneLayer = new GraphicsLayer({
+    // relative-to-scene draws the graphic at the elevation of whatever is
+    // highest at that map point -- ground, mesh, or (here) the 3D
+    // Buildings layer -- instead of draping it flat on bare terrain.
+    // Without this the marker sat right on the ground and any building
+    // taller than it at that spot would render in front of it from most
+    // camera angles, which is exactly what started happening once the 3D
+    // Buildings layer was added below; this keeps it visible above
+    // whatever building occupies the site.
+    elevationInfo: { mode: "relative-to-scene", offset: 3 },
+  });
   sceneLayer.add(centerGraphic);
   // Real 3D building massing instead of a flat imagery basemap -- loads
   // progressively in the background like any other scene layer, so it's
   // just added here rather than awaited before the view is usable.
   const buildingsLayer = new SceneLayer({ url: BUILDINGS_3D_URL, title: "3D Buildings" });
+  restrictWheelZoomToCtrl(sceneDiv);
   currentSceneView = new SceneView({
     container: sceneDiv,
     map: new Map({ basemap: "arcgis/imagery", ground: "world-elevation", layers: [buildingsLayer, sceneLayer] }),

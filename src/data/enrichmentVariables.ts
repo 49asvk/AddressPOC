@@ -22,11 +22,10 @@ export interface EnrichmentCollection {
   variables: EnrichmentVariable[];
 }
 
-// Trimmed to exactly the six demographic cards this app shows. Education,
+// Trimmed to exactly the seven demographic cards this app shows. Education,
 // Employment, and Population Projections were dropped entirely -- none
-// map to a card. Spending trimmed from all 20 categories to just CS01
-// (Food & Non-Alcoholic Beverage), matching "Consumer spending on Food &
-// Beverages" specifically rather than a generic spending card.
+// map to a card. Purchasing Power and Spending (all 20 categories) are
+// separate collections/cards -- see buildIncomeTable/buildSpendingTable.
 export const ENRICHMENT_COLLECTIONS: EnrichmentCollection[] = [
   {
     collectionId: "PopulationEsriIndia",
@@ -94,13 +93,32 @@ export const ENRICHMENT_COLLECTIONS: EnrichmentCollection[] = [
     ],
   },
   {
+    // All 20 Spending (Esri India) categories, "Total" variant only --
+    // verified against the real DataCollections/IN listing (each is its
+    // own currency field, CS01_CY through CS20_CY).
     collectionId: "SpendingEsriIndia",
     label: "Consumer spending",
     variables: [
       { id: "CS01_CY", label: "2024 Food & Beverage: Total", unit: "currency" },
+      { id: "CS02_CY", label: "2024 Alcoholic Beverage: Total", unit: "currency" },
       { id: "CS03_CY", label: "2024 Tobacco: Total", unit: "currency" },
       { id: "CS04_CY", label: "2024 Clothing: Total", unit: "currency" },
       { id: "CS05_CY", label: "2024 Footwear: Total", unit: "currency" },
+      { id: "CS06_CY", label: "2024 Furniture/Furnishing: Total", unit: "currency" },
+      { id: "CS07_CY", label: "2024 Household Textiles: Total", unit: "currency" },
+      { id: "CS08_CY", label: "2024 Household Appliances: Total", unit: "currency" },
+      { id: "CS09_CY", label: "2024 Household Utensils: Total", unit: "currency" },
+      { id: "CS10_CY", label: "2024 House & Garden Tools: Total", unit: "currency" },
+      { id: "CS11_CY", label: "2024 Household Maintenance: Total", unit: "currency" },
+      { id: "CS12_CY", label: "2024 Medical Products: Total", unit: "currency" },
+      { id: "CS13_CY", label: "2024 Electronics & IT: Total", unit: "currency" },
+      { id: "CS14_CY", label: "2024 Recreation Durables: Total", unit: "currency" },
+      { id: "CS15_CY", label: "2024 Toys/Sports/Pets: Total", unit: "currency" },
+      { id: "CS16_CY", label: "2024 Recreational Services: Total", unit: "currency" },
+      { id: "CS17_CY", label: "2024 Books & Stationery: Total", unit: "currency" },
+      { id: "CS18_CY", label: "2024 Catering Services: Total", unit: "currency" },
+      { id: "CS19_CY", label: "2024 Personal Care: Total", unit: "currency" },
+      { id: "CS20_CY", label: "2024 Personal Effects: Total", unit: "currency" },
     ],
   },
   // Household analysis collection removed entirely -- every field in it
