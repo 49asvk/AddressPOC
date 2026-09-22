@@ -14,6 +14,15 @@ export interface PocLocation {
   // scored/ranked by FinalScore). Optional so a location can still work
   // without one -- the big map just skips that layer if it's unset.
   suitabilityLayerUrl?: string;
+  // Per-location population-gradient layers (uploaded separately for each
+  // catchment) shown on the mini maps under the 5min drive / 10min walk
+  // population analysis cards, in place of the old traffic layer there.
+  // Both optional -- a mini map just shows the plain basemap + marker if
+  // the relevant URL isn't set yet.
+  populationLayerUrls?: {
+    walk?: string;
+    drive?: string;
+  };
 }
 
 export const POC_LOCATIONS: PocLocation[] = [

@@ -16,6 +16,7 @@ import LocalBasemapsSource from "@arcgis/core/widgets/BasemapGallery/support/Loc
 import Basemap from "@arcgis/core/Basemap";
 import Fullscreen from "@arcgis/core/widgets/Fullscreen";
 import Measurement from "@arcgis/core/widgets/Measurement";
+import Home from "@arcgis/core/widgets/Home";
 import Expand from "@arcgis/core/widgets/Expand";
 import { enrichPoint } from "./services/geoenrichment";
 import { sampleElevation } from "./services/elevation";
@@ -129,7 +130,7 @@ function kpnStoreCimSymbol(): CIMSymbol {
         // never appears at all, which is exactly what was happening.
         symbolLayers: [
           {
-            // Yellow dot nested near the top of the pin.
+            // Dark green dot (#055F2A) nested near the top of the pin.
             type: "CIMVectorMarker",
             enable: true,
             size: 34,
@@ -140,13 +141,14 @@ function kpnStoreCimSymbol(): CIMSymbol {
                 geometry: { rings: [KPN_DOT_RING] },
                 symbol: {
                   type: "CIMPolygonSymbol",
-                  symbolLayers: [{ type: "CIMSolidFill", enable: true, color: [255, 214, 0, 255] }],
+                  symbolLayers: [{ type: "CIMSolidFill", enable: true, color: [5, 95, 42, 255] }],
                 },
               },
             ],
           },
           {
-            // Pin body -- yellow-green fill, semi-transparent black stroke.
+            // Pin body -- bright yellow fill (#FFEF03), semi-transparent
+            // black stroke.
             type: "CIMVectorMarker",
             enable: true,
             size: 34,
@@ -159,7 +161,7 @@ function kpnStoreCimSymbol(): CIMSymbol {
                   type: "CIMPolygonSymbol",
                   symbolLayers: [
                     { type: "CIMSolidStroke", enable: true, color: [0, 0, 0, 140], width: 1 },
-                    { type: "CIMSolidFill", enable: true, color: [186, 218, 85, 255] },
+                    { type: "CIMSolidFill", enable: true, color: [255, 239, 3, 255] },
                   ],
                 },
               },
@@ -200,15 +202,17 @@ function catchmentContains(catchment: Catchment, centerX: number, centerY: numbe
 }
 
 let currentSceneView: SceneView | null = null;
-let currentBigMapView: MapView | null = null;
+// Two big maps now (the main catchment/POI map and the traffic map), so
+// this tracks all of them rather than a single view.
+let bigMapViews: MapView[] = [];
 let miniViews: MapView[] = [];
 let poiCategoryList: string[] = [];
 
 function destroyAllViews() {
   currentSceneView?.destroy();
   currentSceneView = null;
-  currentBigMapView?.destroy();
-  currentBigMapView = null;
+  bigMapViews.forEach((v) => v.destroy());
+  bigMapViews = [];
   miniViews.forEach((v) => v.destroy());
   miniViews = [];
 }
@@ -413,7 +417,7 @@ export function renderApp(root: HTMLElement) {
   button.addEventListener("click", async () => {
     const locationId = select.value;
     const location = POC_LOCATIONS.find((l) => l.id === locationId) ?? POC_LOCATIONS[0];
-        const variableKeys = getSelectedVariableKeys(root);
+    const variableKeys = getSelectedVariableKeys(root);
     const poiCategories = getSelectedPoiCategories(root);
 
     await runSearch(location, results, variableKeys, poiCategories);
@@ -427,7 +431,7 @@ export function renderApp(root: HTMLElement) {
   });
 }
 
-const CACHE_VERSION = "v11";
+const CACHE_VERSION = "v12";
 
 async function runSearch(
   location: PocLocation,
@@ -509,6 +513,7 @@ async function runSearch(
       locationName: location.name,
       location: { x: location.x, y: location.y },
       suitabilityLayerUrl: location.suitabilityLayerUrl,
+      populationLayerUrls: location.populationLayerUrls,
       kpnStorePoint,
       elevation: elevationResult.status === "fulfilled" ? elevationResult.value : null,
       elevationSamples: ringResult.status === "fulfilled" ? ringResult.value : [],
@@ -593,17 +598,31 @@ async function createMiniMap(
   x: number,
   y: number,
   catchment?: Catchment,
-  storePoint?: KpnStorePoint | null
+  storePoint?: KpnStorePoint | null,
+  populationLayerUrl?: string
 ) {
   const layer = new GraphicsLayer();
   if (catchment) layer.add(catchmentGraphic(x, y, catchment));
   layer.add(storePoint ? kpnStoreGraphic(storePoint.x, storePoint.y) : pointGraphic(x, y));
 
-  const trafficLayer = await createTrafficLayer();
+  // Population gradient layer -- a hosted layer specific to this
+  // catchment (walk or drive), uploaded separately per location. Skipped
+  // with no error until a URL is actually configured for this catchment
+  // (see PocLocation.populationLayerUrls in data/locations.ts).
+  let populationLayer: FeatureLayer | null = null;
+  if (populationLayerUrl) {
+    try {
+      const pLayer = new FeatureLayer({ url: populationLayerUrl, opacity: 0.75 });
+      await pLayer.load();
+      populationLayer = pLayer;
+    } catch (err) {
+      console.error("Population gradient layer failed to load -- check the URL:", err, populationLayerUrl);
+    }
+  }
 
   const view = new MapView({
     container,
-    map: new Map({ basemap: "arcgis/streets", layers: [...(trafficLayer ? [trafficLayer] : []), layer] }),
+    map: new Map({ basemap: "arcgis/streets", layers: [...(populationLayer ? [populationLayer] : []), layer] }),
     center: [x, y],
     zoom: 15,
     constraints: { rotationEnabled: false },
@@ -612,6 +631,14 @@ async function createMiniMap(
   miniViews.push(view);
   await view.when();
   if (catchment) await view.goTo(layer.graphics.toArray(), { animate: false });
+
+  try {
+    const home = new Home({ view });
+    view.ui.add(home, "top-left");
+  } catch (err) {
+    console.error("Home widget failed to initialize on mini map:", err);
+  }
+
   return view;
 }
 
@@ -629,7 +656,8 @@ async function createBigMap(
   driveSection: DemographicCatchment,
   poiByCategory: Record<string, PoiResult[]>,
   suitabilityLayerUrl?: string,
-  kpnStorePoint?: KpnStorePoint | null
+  kpnStorePoint?: KpnStorePoint | null,
+  includeTraffic = false
 ) {
   const driveLayer = new GraphicsLayer({ title: driveSection.label });
   driveLayer.add(catchmentGraphic(x, y, driveSection.catchment, "#378add", [55, 138, 221, 0.12]));
@@ -637,7 +665,7 @@ async function createBigMap(
   const walkLayer = new GraphicsLayer({ title: walkSection.label });
   walkLayer.add(catchmentGraphic(x, y, walkSection.catchment, "#0f6e56", [15, 110, 86, 0.18]));
 
-    const centerLayer = new GraphicsLayer({ title: "KPN Fresh" });
+  const centerLayer = new GraphicsLayer({ title: "KPN Fresh" });
   centerLayer.add(
     kpnStorePoint
       ? kpnStoreGraphic(
@@ -701,11 +729,18 @@ async function createBigMap(
     }
   }
 
+  // Live traffic -- only built for the dedicated traffic map (this
+  // function is also used for the main catchment/POI map, which never
+  // shows traffic at all).
+  let trafficLayer: MapImageLayer | null = null;
+  if (includeTraffic) {
+    trafficLayer = await createTrafficLayer();
+  }
+
   // Suitability sits below the catchment fills so their boundary lines
-  // stay visible on top of it, POIs draw above that as discrete points,
-  // and the location marker stays on top of everything. Live traffic is
-  // deliberately not on this map -- it stays on the two mini-maps under
-  // the walk/drive catchment sections instead.
+  // stay visible on top of it, traffic (when present) draws above that
+  // as road lines, POIs draw above that as discrete points, and the
+  // location marker stays on top of everything.
   const view = new MapView({
     container,
     map: new Map({
@@ -714,6 +749,7 @@ async function createBigMap(
         ...(suitabilityLayer ? [suitabilityLayer] : []),
         driveLayer,
         walkLayer,
+        ...(trafficLayer ? [trafficLayer] : []),
         ...poiLayers,
         centerLayer,
       ],
@@ -721,11 +757,21 @@ async function createBigMap(
     constraints: { rotationEnabled: false },
     ui: { components: ["attribution"] },
   });
-  currentBigMapView = view;
+  bigMapViews.push(view);
   await view.when();
 
   const fitGraphics = [...driveLayer.graphics.toArray(), ...walkLayer.graphics.toArray()];
   await view.goTo(fitGraphics, { animate: false }).catch(() => {});
+
+  // "Return to original extent" -- captures the view's current
+  // viewpoint (the fitted extent above) as its home, since it's
+  // constructed right after that goTo resolves.
+  try {
+    const home = new Home({ view });
+    view.ui.add(home, "top-left");
+  } catch (err) {
+    console.error("Home widget failed to initialize:", err);
+  }
 
   // Fullscreen toggle
   try {
@@ -800,16 +846,20 @@ async function createBigMap(
   // Legend + per-layer visibility toggles -- a custom panel rather than
   // the built-in Legend widget, since that widget only reads renderers
   // off FeatureLayers and these are plain GraphicsLayers.
-    try {
+  try {
     // `symbol` (when set) renders the layer's actual point/line/fill
     // symbology into the swatch via symbolUtils, instead of a flat color
     // square -- used for the KPN marker so the legend shows the real
     // teardrop-pin-with-dot rather than a generic swatch.
+    // KPN Fresh is listed first -- always on top, both in this list and
+    // (via the `layers` array above, where centerLayer is last) on the
+    // map itself.
     const legendRows: { title: string; color: string; symbol?: CIMSymbol; layer: GraphicsLayer | FeatureLayer | MapImageLayer }[] = [
+      { title: "KPN Fresh", color: "#bada55", symbol: kpnStoreCimSymbol(), layer: centerLayer },
       ...(suitabilityLayer ? [{ title: "Suitability analysis", color: "#2f7d32", layer: suitabilityLayer }] : []),
       { title: driveLayer.title as string, color: "#378add", layer: driveLayer },
       { title: walkLayer.title as string, color: "#0f6e56", layer: walkLayer },
-      { title: "KPN Fresh", color: "#bada55", symbol: kpnStoreCimSymbol(), layer: centerLayer },
+      ...(trafficLayer ? [{ title: "Live traffic (India)", color: "#e08b2f", layer: trafficLayer }] : []),
       ...poiLayers.map((l) => ({ title: l.title as string, color: categoryColor(l.title as string), layer: l })),
     ];
     // Checkbox state mirrors each layer's actual default `visible` --
@@ -844,7 +894,7 @@ async function createBigMap(
         console.error("Legend symbol preview failed to render:", err);
       });
     });
-        const legendExpand = new Expand({ view, content: legendContainer, expandIcon: "legend", expandTooltip: "Legend & layers", expanded: true });
+    const legendExpand = new Expand({ view, content: legendContainer, expandIcon: "legend", expandTooltip: "Legend & layers", expanded: true });
     view.ui.add(legendExpand, "top-left");
   } catch (err) {
     console.error("Legend panel failed to initialize:", err);
@@ -1037,7 +1087,7 @@ function buildDemographicCards(enrichment: Record<string, any> | null): { kind: 
   const pyramidHtml = buildAgePyramid(enrichment);
   if (pyramidHtml) cards.push({ kind: "teal", title: "Age-group segmentation", body: pyramidHtml });
 
-    // Income and spending combine into one "Income-based analysis" card --
+  // Income and spending combine into one "Income-based analysis" card --
   // the spending variable(s) render as a labeled sub-section underneath
   // the income stats rather than as their own separate card.
   const incomeCard = buildGenericCollectionCard(purchasingPowerCollection, enrichment);
@@ -1062,7 +1112,8 @@ async function appendDemographicCards(
   x: number,
   y: number,
   catchment: Catchment,
-  storePoint?: KpnStorePoint | null
+  storePoint?: KpnStorePoint | null,
+  populationLayerUrl?: string
 ) {
   for (const c of cards) {
     const card = document.createElement("div");
@@ -1072,7 +1123,7 @@ async function appendDemographicCards(
     container.appendChild(card);
 
     const minimap = card.querySelector(".ai-card__minimap");
-    if (minimap) await createMiniMap(minimap as HTMLDivElement, x, y, catchment, storePoint);
+    if (minimap) await createMiniMap(minimap as HTMLDivElement, x, y, catchment, storePoint, populationLayerUrl);
 
     c.wire?.(card);
   }
@@ -1085,7 +1136,7 @@ async function renderResults(root: HTMLDivElement, data: any) {
 
   const {
     locationName, location, elevation, elevationSamples,
-    demographicsSections, poiByCategory, summaryLabel, suitabilityLayerUrl, kpnStorePoint,
+    demographicsSections, poiByCategory, summaryLabel, suitabilityLayerUrl, kpnStorePoint, populationLayerUrls,
   } = data as {
     locationName: string; location: { x: number; y: number };
     elevation: number | null; elevationSamples: number[];
@@ -1094,6 +1145,7 @@ async function renderResults(root: HTMLDivElement, data: any) {
     summaryLabel: string;
     suitabilityLayerUrl?: string;
     kpnStorePoint?: KpnStorePoint | null;
+    populationLayerUrls?: { walk?: string; drive?: string };
   };
   const roughness = stdDev(elevationSamples || []);
   const x = location.x, y = location.y;
@@ -1161,6 +1213,12 @@ async function renderResults(root: HTMLDivElement, data: any) {
       </div>
     </div>
     ${poiCountTableHtml}
+    <div class="ai-card traffic-map-card" data-kind="teal">
+      <div class="ai-card__header">Live traffic map</div>
+      <div class="ai-card__body">
+        <div class="big-map" id="traffic-map"></div>
+      </div>
+    </div>
   `;
 
   const leftCol = root.querySelector("#top-panel-left") as HTMLDivElement;
@@ -1211,6 +1269,13 @@ async function renderResults(root: HTMLDivElement, data: any) {
   const basemapExpand = new Expand({ view: currentSceneView, content: basemapGallery, expandIcon: "basemap", expandTooltip: "Change basemap" });
   currentSceneView.ui.add(basemapExpand, "top-right");
 
+  try {
+    const sceneHome = new Home({ view: currentSceneView });
+    currentSceneView.ui.add(sceneHome, "top-left");
+  } catch (err) {
+    console.error("Home widget failed to initialize on scene view:", err);
+  }
+
   addLeftCard("amber", "Elevation", elevation != null
     ? `<div class="ai-card__stat">${elevation.toFixed(1)} m</div><div class="ai-card__stat-label">Above sea level</div>`
     : `<div class="ai-card__stat-label">Unavailable — check the Elevation privilege on your API key.</div>`);
@@ -1223,6 +1288,12 @@ async function renderResults(root: HTMLDivElement, data: any) {
   const bigMapDiv = root.querySelector("#big-map") as HTMLDivElement;
   const legendContainer = document.createElement("div");
   await createBigMap(bigMapDiv, legendContainer, x, y, walkSection, driveSection, poiByCategory, suitabilityLayerUrl, kpnStorePoint);
+
+  // Second big map, traffic-focused: same catchments/POIs/marker, no
+  // suitability layer, with live traffic switched on.
+  const trafficMapDiv = root.querySelector("#traffic-map") as HTMLDivElement;
+  const trafficLegendContainer = document.createElement("div");
+  await createBigMap(trafficMapDiv, trafficLegendContainer, x, y, walkSection, driveSection, poiByCategory, undefined, kpnStorePoint, true);
 
   if (demographicsSections.length < 2) {
     console.error("Expected two demographic sections (walk + drive); got", demographicsSections.length);
@@ -1241,7 +1312,10 @@ async function renderResults(root: HTMLDivElement, data: any) {
     col.appendChild(heading);
     splitWrap.appendChild(col);
 
+    const isWalk = section.label.toLowerCase().includes("walk");
+    const populationLayerUrl = isWalk ? populationLayerUrls?.walk : populationLayerUrls?.drive;
+
     const cards = buildDemographicCards(section.enrichment);
-    await appendDemographicCards(col, cards, x, y, section.catchment, kpnStorePoint);
+    await appendDemographicCards(col, cards, x, y, section.catchment, kpnStorePoint, populationLayerUrl);
   }
 }

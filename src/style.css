@@ -48,7 +48,24 @@ body { margin: 0; font-family: system-ui, sans-serif; background: #f4f3ef; }
 .big-map-card .ai-card__body { flex: 1; min-height: 0; padding: 0; position: relative; }
 .big-map { position: absolute; inset: 0; }
 
+/* Standalone full-width traffic map card, shown below the main map and
+   above the 5min/10min section. Not inside .top-panel's flex row, so it
+   needs its own fixed height (big-map-card gets its height from the
+   .top-panel row it lives in -- this card has no such parent to size it).
+   Same box-sizing/width-overflow fix as .poi-count-card since this is a
+   direct child of the same page column. */
+.ai-card.traffic-map-card {
+  height: 520px;
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+  width: calc(100% - (2 * var(--ai-gap)));
+  margin: 0 var(--ai-gap) var(--ai-gap);
+}
+.traffic-map-card .ai-card__body { flex: 1; min-height: 0; padding: 0; position: relative; }
+
 .poi-swatch { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin: 0 2px; }
+
 /* .ai-card sets width:100% (content-box), so adding left/right margin on
    top of that pushes this card wider than its parent and triggers a
    horizontal scrollbar -- box-sizing: border-box + a calc'd width keeps
@@ -60,6 +77,7 @@ body { margin: 0; font-family: system-ui, sans-serif; background: #f4f3ef; }
 .poi-count-table td { padding: 6px 10px; border-bottom: 1px solid #f0f0f0; }
 .poi-count-table td:not(:first-child) { text-align: right; font-variant-numeric: tabular-nums; }
 .poi-count-table .poi-swatch { margin-left: 0; }
+
 .map-legend-panel { padding: 8px 10px; min-width: 210px; max-height: 320px; overflow-y: auto; font-size: 12px; }
 .map-legend-panel .fake-legend__row { cursor: pointer; }
 .map-legend-panel input[type="checkbox"] { margin: 0; }
@@ -85,7 +103,6 @@ body { margin: 0; font-family: system-ui, sans-serif; background: #f4f3ef; }
 .ai-card__stat-label, .ai-card__label { font-size: 12px; color: #666; }
 .ai-card__row { display: flex; justify-content: space-between; padding: 4px 0; border-bottom: 1px solid #f0f0f0; }
 .ai-card__subheading { font-size: 12px; font-weight: 700; color: #666; text-transform: uppercase; letter-spacing: 0.02em; margin: 14px 0 6px; padding-top: 10px; border-top: 1px solid #eee; }
-
 
 .ai-card__json {
   font-family: monospace; font-size: 11px; max-height: 220px; overflow: auto;

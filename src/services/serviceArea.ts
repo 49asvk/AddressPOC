@@ -50,7 +50,13 @@ export async function solveServiceAreaCatchment(
     trimOuterPolygon: true,
   } as any);
 
-  const result = await serviceArea.solve(SERVICE_AREA_URL, params);
+  // polygonDetail isn't a property on the typed ServiceAreaParameters class
+  // (only outputPolygons, a different/unrelated setting, is) -- it's a raw
+  // REST parameter, so it has to go through the solve() call's requestOptions
+  // query rather than the params object itself.
+  const result = await serviceArea.solve(SERVICE_AREA_URL, params, {
+    query: { polygonDetail: "Generalized" },
+  });
   const polygonGraphic = result.serviceAreaPolygons?.features?.[0];
   const geometry = polygonGraphic?.geometry as __esri.Polygon | undefined;
   if (!geometry?.rings) return null;
