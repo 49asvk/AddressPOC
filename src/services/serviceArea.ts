@@ -48,6 +48,7 @@ export async function solveServiceAreaCatchment(
     travelDirection: "to-facility",
     outSpatialReference: { wkid: 4326 } as any,
     trimOuterPolygon: true,
+    timeOfDay: null,
   } as any);
 
   // polygonDetail isn't a property on the typed ServiceAreaParameters class
