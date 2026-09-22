@@ -45,7 +45,7 @@ export async function solveServiceAreaCatchment(
     facilities: new FeatureSet({ features: [facility] }),
     defaultBreaks: [breakValue],
     travelMode,
-    travelDirection: "from-facility",
+    travelDirection: "to-facility",
     outSpatialReference: { wkid: 4326 } as any,
     trimOuterPolygon: true,
   } as any);
