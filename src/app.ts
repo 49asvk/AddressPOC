@@ -5,6 +5,7 @@ import GraphicsLayer from "@arcgis/core/layers/GraphicsLayer";
 import FeatureLayer from "@arcgis/core/layers/FeatureLayer";
 import MapImageLayer from "@arcgis/core/layers/MapImageLayer";
 import SceneLayer from "@arcgis/core/layers/SceneLayer";
+import FeatureFilter from "@arcgis/core/layers/support/FeatureFilter";
 import Graphic from "@arcgis/core/Graphic";
 import Circle from "@arcgis/core/geometry/Circle";
 import Polygon from "@arcgis/core/geometry/Polygon";
@@ -273,7 +274,7 @@ function buildVariablePanel(): string {
         <calcite-block heading="${c.label}" collapsible>
           ${c.variables.map((v) => `
             <calcite-label layout="inline" class="var-checkbox-label">
-              <calcite-checkbox class="var-checkbox" data-key="${c.collectionId}.${v.id}" checked></calcite-checkbox>
+                            <calcite-checkbox class="var-checkbox" data-key="${v.sourceCollectionId ?? c.collectionId}.${v.id}" checked></calcite-checkbox>
               ${v.label}
             </calcite-label>
           `).join("")}
@@ -578,6 +579,21 @@ function pointGraphic(
   });
 }
 
+// Shared by catchmentGraphic (drawing the catchment outline) and the
+// FeatureFilter spatial clips below (restricting other layers to a
+// catchment's shape) -- one place that turns a Catchment into an actual
+// geometry, so both uses always agree on what "the catchment" is.
+function catchmentGeometry(x: number, y: number, catchment: Catchment): Circle | Polygon {
+  if (catchment.kind === "ring") {
+    return new Circle({
+      center: { x, y, spatialReference: { wkid: 4326 } } as any,
+      radius: catchment.km,
+      radiusUnit: "kilometers",
+    });
+  }
+  return new Polygon({ rings: catchment.rings, spatialReference: { wkid: 4326 } });
+}
+
 function catchmentGraphic(
   x: number,
   y: number,
@@ -585,16 +601,8 @@ function catchmentGraphic(
   outlineColor = "#0f6e56",
   fillColor: [number, number, number, number] = [15, 110, 86, 0.15]
 ) {
-  if (catchment.kind === "ring") {
-    const circle = new Circle({
-      center: { x, y, spatialReference: { wkid: 4326 } } as any,
-      radius: catchment.km,
-      radiusUnit: "kilometers",
-    });
-    return new Graphic({ geometry: circle, symbol: { type: "simple-fill", color: fillColor, outline: { color: outlineColor, width: 1.5 } } as any });
-  }
   return new Graphic({
-    geometry: { type: "polygon", rings: catchment.rings, spatialReference: { wkid: 4326 } } as any,
+    geometry: catchmentGeometry(x, y, catchment),
     symbol: { type: "simple-fill", color: fillColor, outline: { color: outlineColor, width: 1.5 } } as any,
   });
 }
@@ -637,6 +645,25 @@ async function createMiniMap(
   miniViews.push(view);
   await view.when();
   if (catchment) await view.goTo(layer.graphics.toArray(), { animate: false });
+
+  // Clip the population layer to just this catchment's shape -- the
+  // uploaded hex grid covers a much larger area than any single 5-min
+  // drive / 10-min walk catchment, so without this every mini map showed
+  // the same big swath of hexagons regardless of which catchment it was
+  // meant to represent. FeatureFilter is a client-side spatial filter on
+  // the layer view: it hides non-intersecting hexagons without touching
+  // the layer's own renderer/symbology.
+  if (populationLayer && catchment) {
+    try {
+      const populationLayerView = await view.whenLayerView(populationLayer);
+      populationLayerView.filter = new FeatureFilter({
+        geometry: catchmentGeometry(x, y, catchment) as any,
+        spatialRelationship: "intersects",
+      });
+    } catch (err) {
+      console.error("Failed to clip population layer to the catchment:", err);
+    }
+  }
 
   try {
     const home = new Home({ view });
@@ -687,17 +714,24 @@ async function createBigMap(
   // marker -- stay on by default; every POI category layer starts
   // switched off (fetched, but not shown) until the person checks it in
   // the legend.
+  // POIs are scoped to the 5min drive-time catchment specifically (not
+  // the 10min walk one) -- this mirrors the "Nearby places" count table,
+  // which counts drive-catchment hits into its own column, and matches
+  // what was asked for: only points actually reachable within the drive
+  // catchment should be plotted on the map itself.
   const poiLayers = Object.entries(poiByCategory).map(([category, pois]) => {
     const layer = new GraphicsLayer({ title: category, visible: false });
     const color = categoryColor(category);
-    pois.forEach((p) =>
-      layer.add(
-        pointGraphic(p.x, p.y, color, { name: p.name, category: p.category, description: p.description }, {
-          title: "{name}",
-          content: "Category: {category}<br>Type: {description}",
-        })
-      )
-    );
+    pois
+      .filter((p) => catchmentContains(driveSection.catchment, x, y, p.x, p.y))
+      .forEach((p) =>
+        layer.add(
+          pointGraphic(p.x, p.y, color, { name: p.name, category: p.category, description: p.description }, {
+            title: "{name}",
+            content: "Category: {category}<br>Type: {description}",
+          })
+        )
+      );
     return layer;
   });
 
@@ -768,6 +802,24 @@ async function createBigMap(
 
   const fitGraphics = [...driveLayer.graphics.toArray(), ...walkLayer.graphics.toArray()];
   await view.goTo(fitGraphics, { animate: false }).catch(() => {});
+  // Clip the suitability layer to the 5min drive-time catchment. The
+  // suitability grid was published for a whole candidate-site area, which
+  // can extend past (or fall short of) the drive-time polygon solved live
+  // here -- clipping it to that catchment is the fallback fix for that
+  // mismatch (the POI points above are scoped the same way, via the
+  // catchmentContains filter). Same FeatureFilter approach as the
+  // population-layer clipping on the mini maps.
+  if (suitabilityLayer) {
+    try {
+      const suitabilityLayerView = await view.whenLayerView(suitabilityLayer);
+      suitabilityLayerView.filter = new FeatureFilter({
+        geometry: catchmentGeometry(x, y, driveSection.catchment) as any,
+        spatialRelationship: "intersects",
+      });
+    } catch (err) {
+      console.error("Failed to clip suitability layer to the drive-time catchment:", err);
+    }
+  }
 
   // "Return to original extent" -- captures the view's current
   // viewpoint (the fitted extent above) as its home, since it's

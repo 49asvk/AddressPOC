@@ -2,6 +2,18 @@ export interface EnrichmentVariable {
   id: string;
   label: string;
   unit?: "currency";
+  // Overrides the containing EnrichmentCollection's collectionId when
+  // building this variable's GeoEnrichment analysisVariables key
+  // ("<collection>.<id>"). Needed for variables that are grouped into a
+  // card under one collection (e.g. "Population analysis") but actually
+  // live in a different GeoEnrichment data collection on the server --
+  // e.g. the 2026 projected population fields below are real, correctly
+  // spelled variable IDs, but they belong to "ProjectedPopulationEsriIndia",
+  // not "PopulationEsriIndia". GeoEnrichment doesn't error on a wrong
+  // collection prefix, it just silently omits that variable from the
+  // result, which is exactly why this was invisible until checked against
+  // the actual DataCollections listing.
+  sourceCollectionId?: string;
 }
 
 export interface EnrichmentCollection {
@@ -24,9 +36,12 @@ export const ENRICHMENT_COLLECTIONS: EnrichmentCollection[] = [
       { id: "POPDENS_CY", label: "2024 Population Density (per km²)" },
       { id: "MALES_CY", label: "2024 Total Male Population" },
       { id: "FEMALES_CY", label: "2024 Total Female Population" },
-      { id: "TOT_P_2026", label: "2026 Total Projected Population" },
-      { id: "TOT_M_2026", label: "2026 Male Population" },
-      { id: "TOT_F_2026", label: "2026 Female Population" },
+      // These three are correctly spelled but live in a different
+      // GeoEnrichment data collection than the rest of this card --
+      // verified against the actual DataCollections/IN listing.
+      { id: "TOT_P_2026", label: "2026 Total Projected Population", sourceCollectionId: "ProjectedPopulationEsriIndia" },
+      { id: "TOT_M_2026", label: "2026 Male Population", sourceCollectionId: "ProjectedPopulationEsriIndia" },
+      { id: "TOT_F_2026", label: "2026 Female Population", sourceCollectionId: "ProjectedPopulationEsriIndia" },
       // All 2011-vintage fields removed per your instruction -- no 2011
       // data anywhere in the app now.
     ],
@@ -80,8 +95,13 @@ export const ENRICHMENT_COLLECTIONS: EnrichmentCollection[] = [
   },
   {
     collectionId: "SpendingEsriIndia",
-    label: "Consumer spending on Food & Beverages",
-    variables: [{ id: "CS01_CY", label: "Food & Non-Alcoholic Beverage Spending", unit: "currency" }],
+    label: "Consumer spending",
+    variables: [
+      { id: "CS01_CY", label: "2024 Food & Beverage: Total", unit: "currency" },
+      { id: "CS03_CY", label: "2024 Tobacco: Total", unit: "currency" },
+      { id: "CS04_CY", label: "2024 Clothing: Total", unit: "currency" },
+      { id: "CS05_CY", label: "2024 Footwear: Total", unit: "currency" },
+    ],
   },
   // Household analysis collection removed entirely -- every field in it
   // besides TOTHH_CY/AVGHHSZ_CY was 2011-only with no current-year

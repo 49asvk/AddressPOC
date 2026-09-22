@@ -53,8 +53,24 @@ export async function solveServiceAreaCatchment(
     // also ServiceAreaParameters' own default when left unset, since it's
     // only written into the outgoing request at all when non-null, so
     // this line doesn't change behavior, it just makes the intent explicit
-    // rather than relying on an unstated default.
+    // rather than relying on an unstated default. Per Esri's Network
+    // Analysis service docs, when timeOfDay is omitted the service uses
+    // typical/historical average speeds, not live or time-dependent
+    // traffic -- so time-of-day was never actually the source of any
+    // mismatch against the suitability layer's extent.
     timeOfDay: null,
+    // useHierarchy IS a real, independently-documented ServiceAreaParameters
+    // property (unlike polygonDetail/timeOfDay, this one actually changes
+    // the solve, not just documents intent). The "Driving Time"/"Walking
+    // Time" presets on this service default to using the network's
+    // hierarchy attribute, which biases routing toward major/highway
+    // roads -- for a short 5-10 minute local catchment that can noticeably
+    // over- or under-shoot local streets compared to a hierarchy-free
+    // solve. Disabling it is the standard fix for small-time-break service
+    // areas not lining up with expectations, and is a much more likely
+    // explanation for the suitability-layer/catchment mismatch than
+    // time-of-day ever was.
+    useHierarchy: false,
   } as any);
 
   // polygonDetail isn't a property on the typed ServiceAreaParameters class
