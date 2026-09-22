@@ -4,6 +4,7 @@ import Map from "@arcgis/core/Map";
 import GraphicsLayer from "@arcgis/core/layers/GraphicsLayer";
 import FeatureLayer from "@arcgis/core/layers/FeatureLayer";
 import MapImageLayer from "@arcgis/core/layers/MapImageLayer";
+import SceneLayer from "@arcgis/core/layers/SceneLayer";
 import Graphic from "@arcgis/core/Graphic";
 import Circle from "@arcgis/core/geometry/Circle";
 import Polygon from "@arcgis/core/geometry/Polygon";
@@ -25,7 +26,7 @@ import { fetchLayerExtent } from "./services/layerExtent";
 import { fetchKpnStoreByName, type KpnStorePoint } from "./services/kpnStores";
 import { solveServiceAreaCatchment } from "./services/serviceArea";
 import type { Catchment } from "./services/catchment";
-import { ENRICHMENT_COLLECTIONS, type EnrichmentCollection } from "./data/enrichmentVariables";
+import { ENRICHMENT_COLLECTIONS } from "./data/enrichmentVariables";
 import { POC_LOCATIONS, type PocLocation } from "./data/locations";
 
 // --- Live traffic (ArcGIS Living Atlas World Traffic service) -----------
@@ -42,6 +43,11 @@ import { POC_LOCATIONS, type PocLocation } from "./data/locations";
 // traffic restricted to just the enriched location's area, with no extra
 // clipping geometry needed.
 const TRAFFIC_SERVICE_URL = "https://utility.arcgis.com/usrsvcs/servers/148a7ab55f5543159bb3d33ba97eb7ec/rest/services/World/Traffic/MapServer";
+
+// Global photoreal/mesh 3D buildings layer for the scene-view card, so the
+// small 3D map actually shows real building massing instead of a flat
+// imagery basemap with a marker floating over it.
+const BUILDINGS_3D_URL = "https://basemaps3d.arcgis.com/arcgis/rest/services/Esri3D_Buildings_v1/SceneServer";
 
 async function createTrafficLayer(): Promise<MapImageLayer | null> {
   try {
@@ -431,7 +437,7 @@ export function renderApp(root: HTMLElement) {
   });
 }
 
-const CACHE_VERSION = "v12";
+const CACHE_VERSION = "v13";
 
 async function runSearch(
   location: PocLocation,
@@ -513,7 +519,7 @@ async function runSearch(
       locationName: location.name,
       location: { x: location.x, y: location.y },
       suitabilityLayerUrl: location.suitabilityLayerUrl,
-      populationLayerUrls: location.populationLayerUrls,
+      populationLayerUrl: location.populationLayerUrl,
       kpnStorePoint,
       elevation: elevationResult.status === "fulfilled" ? elevationResult.value : null,
       elevationSamples: ringResult.status === "fulfilled" ? ringResult.value : [],
@@ -605,10 +611,10 @@ async function createMiniMap(
   if (catchment) layer.add(catchmentGraphic(x, y, catchment));
   layer.add(storePoint ? kpnStoreGraphic(storePoint.x, storePoint.y) : pointGraphic(x, y));
 
-  // Population gradient layer -- a hosted layer specific to this
-  // catchment (walk or drive), uploaded separately per location. Skipped
-  // with no error until a URL is actually configured for this catchment
-  // (see PocLocation.populationLayerUrls in data/locations.ts).
+  // Population gradient (H10 hex grid) layer for this location -- same
+  // URL used for both the walk and drive mini maps, just centered/zoomed
+  // differently. Skipped with no error until a URL is actually configured
+  // (see PocLocation.populationLayerUrl in data/locations.ts).
   let populationLayer: FeatureLayer | null = null;
   if (populationLayerUrl) {
     try {
@@ -913,28 +919,37 @@ const purchasingPowerCollection = ENRICHMENT_COLLECTIONS.find((c) => c.collectio
 const spendingCollection = ENRICHMENT_COLLECTIONS.find((c) => c.collectionId === "SpendingEsriIndia")!;
 const consumerStylesLabels = Object.fromEntries(consumerStylesCollection.variables.map((v) => [v.id, v.label]));
 
+// Split into an explicit "2024" group and "2026 Projected" group, each
+// with its own subheading, so it's never ambiguous which year a number
+// on this card belongs to (previously "Total"/"Male"/"Female" mixed both
+// years together under one unlabeled grid).
 function buildNearbyPopulation(enrichment: Record<string, any>): string | null {
-  const curatedIds = ["TOT_P_2026", "TOTPOP_CY", "MALES_CY", "FEMALES_CY", "POPDENS_CY"];
-  const stats: { label: string; value: string }[] = [];
-  // 2026 projected population leads the card, ahead of the 2024 figures.
-  if ("TOT_P_2026" in enrichment) stats.push({ label: "2026 Projected", value: formatInt(enrichment.TOT_P_2026) });
-  if ("TOTPOP_CY" in enrichment) stats.push({ label: "Total", value: formatInt(enrichment.TOTPOP_CY) });
-  if ("MALES_CY" in enrichment) stats.push({ label: "Male", value: formatInt(enrichment.MALES_CY) });
-  if ("FEMALES_CY" in enrichment) stats.push({ label: "Female", value: formatInt(enrichment.FEMALES_CY) });
-  if ("POPDENS_CY" in enrichment) stats.push({ label: "Per km²", value: Number(enrichment.POPDENS_CY).toFixed(0) });
+  const curatedIds = ["TOTPOP_CY", "MALES_CY", "FEMALES_CY", "POPDENS_CY", "TOT_P_2026", "TOT_M_2026", "TOT_F_2026"];
+
+  const stats2024: { label: string; value: string }[] = [];
+  if ("TOTPOP_CY" in enrichment) stats2024.push({ label: "2024 Total", value: formatInt(enrichment.TOTPOP_CY) });
+  if ("MALES_CY" in enrichment) stats2024.push({ label: "2024 Male", value: formatInt(enrichment.MALES_CY) });
+  if ("FEMALES_CY" in enrichment) stats2024.push({ label: "2024 Female", value: formatInt(enrichment.FEMALES_CY) });
+  if ("POPDENS_CY" in enrichment) stats2024.push({ label: "2024 Density (per km²)", value: Number(enrichment.POPDENS_CY).toFixed(0) });
+
+  const stats2026: { label: string; value: string }[] = [];
+  if ("TOT_P_2026" in enrichment) stats2026.push({ label: "2026 Projected Total", value: formatInt(enrichment.TOT_P_2026) });
+  if ("TOT_M_2026" in enrichment) stats2026.push({ label: "2026 Projected Male", value: formatInt(enrichment.TOT_M_2026) });
+  if ("TOT_F_2026" in enrichment) stats2026.push({ label: "2026 Projected Female", value: formatInt(enrichment.TOT_F_2026) });
 
   const extraRows = populationCollection.variables
     .filter((v) => !curatedIds.includes(v.id) && v.id in enrichment)
     .map((v) => `<div class="ai-card__row"><span>${v.label}</span><b>${formatFieldValue(enrichment[v.id], v.unit)}</b></div>`)
     .join("");
 
-  if (stats.length === 0 && !extraRows) return null;
+  if (stats2024.length === 0 && stats2026.length === 0 && !extraRows) return null;
 
-  const gridHtml = stats.length
-    ? `<div class="stat-grid">${stats.map((s) => `<div><div class="ai-card__stat" style="font-size:20px">${s.value}</div><div class="ai-card__stat-label">${s.label}</div></div>`).join("")}</div>`
-    : "";
+  const gridHtml = (stats: { label: string; value: string }[], heading: string) =>
+    stats.length
+      ? `<div class="ai-card__subheading">${heading}</div><div class="stat-grid">${stats.map((s) => `<div><div class="ai-card__stat" style="font-size:20px">${s.value}</div><div class="ai-card__stat-label">${s.label}</div></div>`).join("")}</div>`
+      : "";
 
-  return `${gridHtml}${extraRows}<div class="ai-card__minimap"></div>`;
+  return `${gridHtml(stats2024, "2024 Population (Current Year)")}${gridHtml(stats2026, "2026 Projected Population")}${extraRows}<div class="ai-card__minimap"></div>`;
 }
 
 function buildAgePyramid(enrichment: Record<string, any>): string | null {
@@ -1051,20 +1066,18 @@ function buildConsumerStylesDonut(enrichment: Record<string, any>): { body: stri
   return { body, wire };
 }
 
-function buildGenericCollectionCard(collection: EnrichmentCollection, enrichment: Record<string, any>): { body: string } | null {
-  const present = collection.variables.filter((v) => v.id in enrichment);
-  if (present.length === 0) return null;
-
-  const [hero, ...rest] = present;
-  const heroHtml = `
-    <div class="ai-card__stat">${formatFieldValue(enrichment[hero.id], hero.unit)}</div>
-    <div class="ai-card__stat-label">${hero.label}</div>
-  `;
-  const restHtml = rest
-    .map((v) => `<div class="ai-card__row"><span>${v.label}</span><b>${formatFieldValue(enrichment[v.id], v.unit)}</b></div>`)
+// Every Purchasing Power + Spending (BA) variable in one plain table --
+// label/value rows via the existing `.ai-card table` styling (same
+// left/right-aligned two-column look used elsewhere in the app), rather
+// than a hero stat plus a handful of loose rows.
+function buildIncomeTable(enrichment: Record<string, any>): string | null {
+  const rows = [...purchasingPowerCollection.variables, ...spendingCollection.variables]
+    .filter((v) => v.id in enrichment)
+    .map((v) => `<tr><td>${v.label}</td><td>${formatFieldValue(enrichment[v.id], v.unit)}</td></tr>`)
     .join("");
 
-  return { body: heroHtml + restHtml };
+  if (!rows) return null;
+  return `<table><tbody>${rows}</tbody></table>`;
 }
 
 function buildDemographicCards(enrichment: Record<string, any> | null): { kind: string; title: string; body: string; wire?: (card: HTMLElement) => void }[] {
@@ -1087,17 +1100,10 @@ function buildDemographicCards(enrichment: Record<string, any> | null): { kind: 
   const pyramidHtml = buildAgePyramid(enrichment);
   if (pyramidHtml) cards.push({ kind: "teal", title: "Age-group segmentation", body: pyramidHtml });
 
-  // Income and spending combine into one "Income-based analysis" card --
-  // the spending variable(s) render as a labeled sub-section underneath
-  // the income stats rather than as their own separate card.
-  const incomeCard = buildGenericCollectionCard(purchasingPowerCollection, enrichment);
-  const spendingCard = buildGenericCollectionCard(spendingCollection, enrichment);
-  if (incomeCard || spendingCard) {
-    const spendingHtml = spendingCard
-      ? `<div class="ai-card__subheading">Consumer spending — Food & Beverages</div>${spendingCard.body}`
-      : "";
-    cards.push({ kind: "teal", title: "Income-based analysis", body: `${incomeCard?.body ?? ""}${spendingHtml}` });
-  }
+  // Income + spending (every Purchasing Power and Spending BA variable),
+  // as one plain table rather than a hero stat with loose rows.
+  const incomeTableHtml = buildIncomeTable(enrichment);
+  if (incomeTableHtml) cards.push({ kind: "teal", title: "Income-based analysis", body: incomeTableHtml });
 
   if (cards.length === 0) {
     return [{ kind: "teal", title: "Demographics", body: `<div class="ai-card__stat-label">No data returned for the selected variables in this catchment.</div>` }];
@@ -1136,7 +1142,7 @@ async function renderResults(root: HTMLDivElement, data: any) {
 
   const {
     locationName, location, elevation, elevationSamples,
-    demographicsSections, poiByCategory, summaryLabel, suitabilityLayerUrl, kpnStorePoint, populationLayerUrls,
+    demographicsSections, poiByCategory, summaryLabel, suitabilityLayerUrl, kpnStorePoint, populationLayerUrl,
   } = data as {
     locationName: string; location: { x: number; y: number };
     elevation: number | null; elevationSamples: number[];
@@ -1145,7 +1151,7 @@ async function renderResults(root: HTMLDivElement, data: any) {
     summaryLabel: string;
     suitabilityLayerUrl?: string;
     kpnStorePoint?: KpnStorePoint | null;
-    populationLayerUrls?: { walk?: string; drive?: string };
+    populationLayerUrl?: string;
   };
   const roughness = stdDev(elevationSamples || []);
   const x = location.x, y = location.y;
@@ -1246,9 +1252,13 @@ async function renderResults(root: HTMLDivElement, data: any) {
   const centerGraphic = kpnStorePoint ? kpnStoreGraphic(kpnStorePoint.x, kpnStorePoint.y) : pointGraphic(x, y);
   const sceneLayer = new GraphicsLayer();
   sceneLayer.add(centerGraphic);
+  // Real 3D building massing instead of a flat imagery basemap -- loads
+  // progressively in the background like any other scene layer, so it's
+  // just added here rather than awaited before the view is usable.
+  const buildingsLayer = new SceneLayer({ url: BUILDINGS_3D_URL, title: "3D Buildings" });
   currentSceneView = new SceneView({
     container: sceneDiv,
-    map: new Map({ basemap: "arcgis/imagery", ground: "world-elevation", layers: [sceneLayer] }),
+    map: new Map({ basemap: "arcgis/imagery", ground: "world-elevation", layers: [buildingsLayer, sceneLayer] }),
     ui: { components: ["attribution"] },
   });
   await currentSceneView.when();
@@ -1311,9 +1321,6 @@ async function renderResults(root: HTMLDivElement, data: any) {
     heading.textContent = section.label;
     col.appendChild(heading);
     splitWrap.appendChild(col);
-
-    const isWalk = section.label.toLowerCase().includes("walk");
-    const populationLayerUrl = isWalk ? populationLayerUrls?.walk : populationLayerUrls?.drive;
 
     const cards = buildDemographicCards(section.enrichment);
     await appendDemographicCards(col, cards, x, y, section.catchment, kpnStorePoint, populationLayerUrl);

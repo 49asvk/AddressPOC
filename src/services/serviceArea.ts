@@ -48,6 +48,12 @@ export async function solveServiceAreaCatchment(
     travelDirection: "to-facility",
     outSpatialReference: { wkid: 4326 } as any,
     trimOuterPolygon: true,
+    // Explicitly no time-of-day, matching how the suitability-layer
+    // catchments were generated (time of day = None there too) -- this is
+    // also ServiceAreaParameters' own default when left unset, since it's
+    // only written into the outgoing request at all when non-null, so
+    // this line doesn't change behavior, it just makes the intent explicit
+    // rather than relying on an unstated default.
     timeOfDay: null,
   } as any);
 

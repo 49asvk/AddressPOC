@@ -14,15 +14,14 @@ export interface PocLocation {
   // scored/ranked by FinalScore). Optional so a location can still work
   // without one -- the big map just skips that layer if it's unset.
   suitabilityLayerUrl?: string;
-  // Per-location population-gradient layers (uploaded separately for each
-  // catchment) shown on the mini maps under the 5min drive / 10min walk
-  // population analysis cards, in place of the old traffic layer there.
-  // Both optional -- a mini map just shows the plain basemap + marker if
-  // the relevant URL isn't set yet.
-  populationLayerUrls?: {
-    walk?: string;
-    drive?: string;
-  };
+  // Per-location population-gradient (H10 hex grid) layer shown on the
+  // mini maps under both the 5min drive and 10min walk population
+  // analysis cards, in place of the old traffic layer there. One layer
+  // per location -- it already covers the full area around the site, so
+  // the same URL is used for both catchments' mini maps, just centered/
+  // zoomed to each catchment separately. Optional so a location without
+  // one yet just shows the plain basemap + marker.
+  populationLayerUrl?: string;
 }
 
 export const POC_LOCATIONS: PocLocation[] = [
@@ -32,6 +31,7 @@ export const POC_LOCATIONS: PocLocation[] = [
     x: 80.238249,
     y: 13.034878,
     suitabilityLayerUrl: "https://services7.arcgis.com/8phUg7DrlXpKgLyA/arcgis/rest/services/Candidate_Sites_T_Nagar_3/FeatureServer/1",
+    populationLayerUrl: "https://services7.arcgis.com/8phUg7DrlXpKgLyA/arcgis/rest/services/KPN_HexGridH10_TNagar3_EnrichLayer/FeatureServer/0",
   },
   {
     id: "loc-2",
@@ -39,6 +39,7 @@ export const POC_LOCATIONS: PocLocation[] = [
     x: 78.5112555,
     y: 17.499804,
     suitabilityLayerUrl: "https://services7.arcgis.com/8phUg7DrlXpKgLyA/arcgis/rest/services/Candidate_Sites_Alwal/FeatureServer/1",
+    populationLayerUrl: "https://services7.arcgis.com/8phUg7DrlXpKgLyA/arcgis/rest/services/KPN_HexGridH10_Alwal_EnrichLayer/FeatureServer/0",
   },
   {
     id: "loc-3",
@@ -46,6 +47,7 @@ export const POC_LOCATIONS: PocLocation[] = [
     x: 78.197697,
     y: 17.428812,
     suitabilityLayerUrl: "https://services7.arcgis.com/8phUg7DrlXpKgLyA/arcgis/rest/services/Candidate_Sites_Mokila/FeatureServer/1",
+    populationLayerUrl: "https://services7.arcgis.com/8phUg7DrlXpKgLyA/arcgis/rest/services/KPN_HexGridH10_Mokila_EnrichLayer/FeatureServer/0",
   },
   {
     id: "loc-4",
@@ -53,6 +55,7 @@ export const POC_LOCATIONS: PocLocation[] = [
     x: 77.547451,
     y: 12.942595,
     suitabilityLayerUrl: "https://services7.arcgis.com/8phUg7DrlXpKgLyA/arcgis/rest/services/Candidate_Sites_Girinagar/FeatureServer/1",
+    populationLayerUrl: "https://services7.arcgis.com/8phUg7DrlXpKgLyA/arcgis/rest/services/KPN_HexGridH10_Girinagar_EnrichLayer/FeatureServer/0",
   },
   {
     id: "loc-5",
@@ -60,5 +63,6 @@ export const POC_LOCATIONS: PocLocation[] = [
     x: 76.403008,
     y: 10.134563,
     suitabilityLayerUrl: "https://services7.arcgis.com/8phUg7DrlXpKgLyA/arcgis/rest/services/Candidate_Sites_Sreemoolanagaram/FeatureServer/1",
+    populationLayerUrl: "https://services7.arcgis.com/8phUg7DrlXpKgLyA/arcgis/rest/services/KPN_HexGridH10_Sreemoolanagaram_EnrichLayer/FeatureServer/0",
   },
 ];
