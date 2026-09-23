@@ -509,7 +509,7 @@ function poiIconGraphic(
 ) {
   return new Graphic({
     geometry: { type: "point", x, y, spatialReference: { wkid: 4326 } } as any,
-    symbol: new PictureMarkerSymbol({ url: poiMarkerDataUri(category), width: 28, height: 28 }),
+    symbol: new PictureMarkerSymbol({ url: poiMarkerDataUri(category), width: 12, height: 12 }),
     attributes,
     popupTemplate: popupTemplate as any,
   });
@@ -1308,28 +1308,50 @@ async function createBigMap(
     // true for everything above, false for the POI layers -- rather than
     // being hardcoded, so this panel can never drift out of sync with
     // what's actually drawn on the map.
-    legendContainer.innerHTML = `
-      <div class="map-legend-panel">
-        <div class="map-legend-panel__toggles">
-          ${legendRows.map((r, i) => `
-            <label class="fake-legend__row">
-              <input type="checkbox" class="map-legend__toggle" data-layer-index="${i}" ${r.layer.visible ? "checked" : ""}>
-              ${r.category
-                ? poiIconBadgeHtml(r.category)
-                : r.native
-                  ? ""
-                  : `<span class="fake-legend__swatch" data-swatch-index="${i}" style="background:${r.symbol ? "transparent" : r.color}"></span>`}
-              ${r.title}
-            </label>
-          `).join("")}
-        </div>
-        <div class="map-legend-panel__native"></div>
-      </div>
-    `;
-    legendContainer.querySelectorAll<HTMLInputElement>(".map-legend__toggle").forEach((cb) => {
-      cb.addEventListener("change", () => {
-        const idx = Number(cb.dataset.layerIndex);
-        legendRows[idx].layer.visible = cb.checked;
+        // Real, REST-published symbology for the hosted layers, via the
+    // built-in Legend widget -- same approach as the population mini
+    // maps (see createMiniMap above). One Legend widget per native row
+    // (rather than one shared widget for all of them), each in its own
+    // wrapper div -- that wrapper's display is toggled directly by the
+    // checkbox handler below, since the widget itself doesn't reliably
+    // react to a *sublayer's* own visible flag when it's referenced via
+    // sublayerIds on the parent MapImageLayer (that's what let a
+    // toggled-off layer's symbology keep showing). Referenced via the
+    // parent trafficLayer + `sublayerIds` (rather than passing the group
+    // Sublayer object directly) -- that's the documented way to scope a
+    // MapImageLayer's legend to specific sublayers, and it's what
+    // actually walks down into each sublayer's own renderer; passing the
+    // Sublayer instance directly was leaving the incidents group's entry
+    // blank.
+    const nativeLegendMount = legendContainer.querySelector<HTMLDivElement>(".map-legend-panel__native");
+    legendRows.forEach((r, i) => {
+      if (!r.native || !nativeLegendMount) return;
+      let layerInfo: __esri.LegendViewModelLayerInfo | null = null;
+      if (r.layer === asiaPacificIncidents && trafficLayer) {
+        layerInfo = { layer: trafficLayer, sublayerIds: [45], title: r.title };
+      } else if (r.layer === indiaTraffic && trafficLayer) {
+        layerInfo = { layer: trafficLayer, sublayerIds: [32], title: r.title };
+      } else if (r.layer === suitabilityLayer) {
+        layerInfo = { layer: suitabilityLayer as FeatureLayer, title: r.title };
+      }
+      if (!layerInfo) return;
+      const item = document.createElement("div");
+      item.dataset.nativeIndex = String(i);
+      item.style.display = r.layer.visible ? "" : "none";
+      nativeLegendMount.appendChild(item);
+      new Legend({
+        view,
+        container: item,
+        layerInfos: [layerInfo],
+        style: { type: "classic", layout: "stack" },
+        // The incidents/road-closures sublayers only draw at certain map
+        // scales (their Overview tier is excluded entirely in
+        // createTrafficLayer; Intermediate/Detailed still have their own
+        // scale ranges) -- Legend hides a sublayer's entry outside its
+        // scale range by default, which was the other half of why that
+        // row showed empty. This makes the legend describe the
+        // symbology regardless of the view's current zoom level.
+        respectLayerVisibility: false,
       });
     });
     // Swap the flat swatch for a rendered preview of the real symbol,
@@ -1343,40 +1365,18 @@ async function createBigMap(
         console.error("Legend symbol preview failed to render:", err);
       });
     });
-    // Real, REST-published symbology for the hosted layers, via the
-    // built-in Legend widget -- same approach as the population mini
-    // maps (see createMiniMap above). Referenced via the parent
-    // trafficLayer + `sublayerIds` (rather than passing the group
-    // Sublayer object directly) -- that's the documented way to scope a
-    // MapImageLayer's legend to specific sublayers, and it's what
-    // actually walks down into each sublayer's own renderer; passing the
-    // Sublayer instance directly was leaving the incidents group's entry
-    // blank.
-    const nativeLegendInfos: __esri.LegendViewModelLayerInfo[] = [];
-    if (trafficLayer && asiaPacificIncidents) {
-      nativeLegendInfos.push({ layer: trafficLayer, sublayerIds: [45], title: "Traffic incidents (Asia Pacific)" });
-    }
-    if (trafficLayer && indiaTraffic) {
-      nativeLegendInfos.push({ layer: trafficLayer, sublayerIds: [32], title: "Live traffic (India)" });
-    }
-    if (suitabilityLayer) nativeLegendInfos.push({ layer: suitabilityLayer, title: "Suitability analysis" });
-    const nativeLegendMount = legendContainer.querySelector<HTMLDivElement>(".map-legend-panel__native");
-    if (nativeLegendMount && nativeLegendInfos.length > 0) {
-      new Legend({
-        view,
-        container: nativeLegendMount,
-        layerInfos: nativeLegendInfos,
-        style: { type: "classic", layout: "stack" },
-        // The incidents/road-closures sublayers only draw at certain map
-        // scales (their Overview tier is excluded entirely in
-        // createTrafficLayer; Intermediate/Detailed still have their own
-        // scale ranges) -- Legend hides a sublayer's entry outside its
-        // scale range by default, which was the other half of why that
-        // row showed empty. This makes the legend describe the
-        // symbology regardless of the view's current zoom level.
-        respectLayerVisibility: false,
+    legendContainer.querySelectorAll<HTMLInputElement>(".map-legend__toggle").forEach((cb) => {
+      cb.addEventListener("change", () => {
+        const idx = Number(cb.dataset.layerIndex);
+        legendRows[idx].layer.visible = cb.checked;
+        // Native rows (suitability/traffic) have their own Legend widget
+        // in a wrapper div built above -- hide/show that wrapper in step
+        // with the checkbox, since the Legend widget doesn't reliably
+        // react to a sublayer's own visible flag on its own.
+        const nativeItem = legendContainer.querySelector<HTMLElement>(`[data-native-index="${idx}"]`);
+        if (nativeItem) nativeItem.style.display = cb.checked ? "" : "none";
       });
-    }
+    });
     const legendExpand = new Expand({ view, content: legendContainer, expandIcon: "legend", expandTooltip: "Legend & layers", expanded: true });
     view.ui.add(legendExpand, "top-left");
   } catch (err) {
