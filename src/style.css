@@ -66,10 +66,10 @@ body { margin: 0; font-family: system-ui, sans-serif; background: #f4f3ef; }
 
 /* Shared everywhere a POI category needs to be identified -- the "Nearby
    places" picker, the map legend, and the POI count table -- so it's
-   always the literal same badge image used for that category's marker
-   on the map (see poiIconBadgeHtml/poiMarkerDataUri in app.ts), never a
-   separately-styled, differently-shaped substitute. */
-.poi-icon-badge { display: inline-block; vertical-align: -3px; margin: 0 4px 0 2px; border-radius: 50%; }
+   always the literal same line-icon image used for that category's
+   marker on the map (see poiIconBadgeHtml/poiMarkerDataUri in app.ts),
+   never a separately-styled, differently-shaped substitute. */
+.poi-icon-badge { display: inline-block; vertical-align: -3px; margin: 0 4px 0 2px; }
 
 .poi-count-row--expandable { cursor: pointer; }
 .poi-count-row--expandable:hover { background: #f7f7f5; }
@@ -91,8 +91,6 @@ body { margin: 0; font-family: system-ui, sans-serif; background: #f4f3ef; }
 .poi-count-table .poi-icon-badge { margin-left: 0; }
 
 .map-legend-panel { padding: 8px 10px; min-width: 210px; max-width: 260px; max-height: 420px; overflow-y: auto; font-size: 12px; }
-.map-legend-panel .fake-legend__row { cursor: pointer; }
-.map-legend-panel input[type="checkbox"] { margin: 0; }
 .map-legend-panel .fake-legend__row { cursor: pointer; }
 .map-legend-panel input[type="checkbox"] { margin: 0; }
 /* Real Legend widget for the hosted layers (suitability + traffic),
@@ -146,9 +144,13 @@ body { margin: 0; font-family: system-ui, sans-serif; background: #f4f3ef; }
 
 .survey-bar { display: flex; height: 18px; border-radius: 4px; overflow: hidden; }
 
+/* This got dropped in an earlier hand-edit -- without it, .fake-legend__row
+   labels default to the browser's UA display:inline for <label>, which is
+   exactly why the legend rows were running together on the same line
+   instead of stacking one per row. */
+.fake-legend__row { display: flex; align-items: center; gap: 6px; padding: 3px 0; }
 .fake-legend__row .poi-icon-badge { flex-shrink: 0; margin: 0; }
 .fake-legend__swatch { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
-.fake-legend__icon { flex-shrink: 0; }
 
 .fake-pyramid__row { display: flex; align-items: center; height: 14px; margin: 3px 0; }
 .fake-pyramid__bar { height: 10px; background: #378add; }

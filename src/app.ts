@@ -445,23 +445,27 @@ function categoryIcon(category: string): PoiIconInfo {
   return match?.icon ?? POI_FALLBACK_ICON;
 }
 
-// Builds a small colored circular badge with the category's icon glyph
-// centered inside it, encoded as a data: URI -- used as a
-// PictureMarkerSymbol's url so POI points render as recognizable icons
-// on the map instead of flat colored dots. Reuses the glyph's own <path>
-// data as-is (stripping Calcite's invisible no-op bounding-box path and
-// its own <svg> wrapper), just recolored white via the wrapping <g>.
-// A plain object rather than the built-in generic Map here -- this
-// module already imports the ArcGIS SDK's own `Map` class as the default
-// export of "@arcgis/core/Map" (for the scene/2D maps' basemap+layers),
-// which shadows the global `Map<K, V>` collection type for the rest of
-// this file.
+// Builds a small colored line-icon for the category -- just the glyph
+// itself in the category's color on a transparent background, encoded as
+// a data: URI -- used as a PictureMarkerSymbol's url so POI points render
+// as recognizable icons on the map. This intentionally goes back to a
+// plain outlined/line-style icon rather than a solid filled circular
+// badge: with a lot of nearby POIs, overlapping solid discs merge into an
+// unreadable blob, while overlapping line icons stay visually distinct
+// since only the glyph strokes themselves carry ink, not a full circle.
+// Reuses the glyph's own <path> data as-is (stripping Calcite's invisible
+// no-op bounding-box path and its own <svg> wrapper), just recolored via
+// the wrapping <g>. A plain object rather than the built-in generic Map
+// here -- this module already imports the ArcGIS SDK's own `Map` class as
+// the default export of "@arcgis/core/Map" (for the scene/2D maps'
+// basemap+layers), which shadows the global `Map<K, V>` collection type
+// for the rest of this file.
 const poiMarkerUriCache: Record<string, string> = {};
 
 function poiMarkerDataUri(category: string): string {
   const color = categoryColor(category);
   const icon = categoryIcon(category);
-  const cacheKey = `${color}|${icon.calciteIcon}`;
+  const cacheKey = `${color}|${icon.calciteIcon}|line`;
   const cached = poiMarkerUriCache[cacheKey];
   if (cached) return cached;
 
@@ -469,9 +473,11 @@ function poiMarkerDataUri(category: string): string {
     .map((m) => m[0])
     .filter((p) => !p.includes('fill="none"'));
 
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="34" height="34" viewBox="0 0 34 34">` +
-    `<circle cx="17" cy="17" r="15" fill="${color}" stroke="#ffffff" stroke-width="2"/>` +
-    `<g transform="translate(8,8) scale(0.75)" fill="#ffffff">${glyphPaths.join("")}</g>` +
+  // A thin white halo (stroke drawn behind the fill, via paint-order)
+  // keeps the colored glyph legible over similarly-colored or dark map
+  // features, without adding a filled background shape behind it.
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24">` +
+    `<g fill="${color}" stroke="#ffffff" stroke-width="1.5" stroke-linejoin="round" paint-order="stroke fill">${glyphPaths.join("")}</g>` +
     `</svg>`;
 
   const uri = `data:image/svg+xml,${encodeURIComponent(svg)}`;
@@ -479,20 +485,21 @@ function poiMarkerDataUri(category: string): string {
   return uri;
 }
 
-// Renders the exact same colored-badge image used for a category's map
-// marker (poiMarkerDataUri) as an <img>, for use anywhere else a
-// category needs to be identified -- the legend, the POI picker, and the
-// POI count table. Using the identical data: URI (not a separately
-// styled <calcite-icon>) is what guarantees these all look pixel-for-
-// pixel the same as the marker on the map, instead of a filled circle on
-// the map next to a bare, unfilled glyph everywhere else.
+// Renders the exact same colored line-icon used for a category's map
+// marker (poiMarkerDataUri) as an <img>, for use anywhere else a category
+// needs to be identified -- the legend, the POI picker, and the POI count
+// table. Using the identical data: URI (not a separately styled
+// <calcite-icon>) is what guarantees these all look pixel-for-pixel the
+// same as the marker on the map.
 function poiIconBadgeHtml(category: string, size = 16): string {
   return `<img class="poi-icon-badge" src="${poiMarkerDataUri(category)}" width="${size}" height="${size}" alt="">`;
 }
 
 // Icon-badge equivalent of pointGraphic(), used only for POI points --
 // the KPN store marker and the plain selected-location dot (pointGraphic
-// itself) are untouched.
+// itself) are untouched. Sized a bit larger than the old filled badge
+// (28 vs 22) since a bare line icon has less visual weight than a solid
+// disc and needs the extra size to stay as legible on the map.
 function poiIconGraphic(
   x: number,
   y: number,
@@ -502,7 +509,7 @@ function poiIconGraphic(
 ) {
   return new Graphic({
     geometry: { type: "point", x, y, spatialReference: { wkid: 4326 } } as any,
-    symbol: new PictureMarkerSymbol({ url: poiMarkerDataUri(category), width: 22, height: 22 }),
+    symbol: new PictureMarkerSymbol({ url: poiMarkerDataUri(category), width: 28, height: 28 }),
     attributes,
     popupTemplate: popupTemplate as any,
   });
@@ -1338,10 +1345,20 @@ async function createBigMap(
     });
     // Real, REST-published symbology for the hosted layers, via the
     // built-in Legend widget -- same approach as the population mini
-    // maps (see createMiniMap above).
+    // maps (see createMiniMap above). Referenced via the parent
+    // trafficLayer + `sublayerIds` (rather than passing the group
+    // Sublayer object directly) -- that's the documented way to scope a
+    // MapImageLayer's legend to specific sublayers, and it's what
+    // actually walks down into each sublayer's own renderer; passing the
+    // Sublayer instance directly was leaving the incidents group's entry
+    // blank.
     const nativeLegendInfos: __esri.LegendViewModelLayerInfo[] = [];
-    if (asiaPacificIncidents) nativeLegendInfos.push({ layer: asiaPacificIncidents, title: "Traffic incidents (Asia Pacific)" });
-    if (indiaTraffic) nativeLegendInfos.push({ layer: indiaTraffic, title: "Live traffic (India)" });
+    if (trafficLayer && asiaPacificIncidents) {
+      nativeLegendInfos.push({ layer: trafficLayer, sublayerIds: [45], title: "Traffic incidents (Asia Pacific)" });
+    }
+    if (trafficLayer && indiaTraffic) {
+      nativeLegendInfos.push({ layer: trafficLayer, sublayerIds: [32], title: "Live traffic (India)" });
+    }
     if (suitabilityLayer) nativeLegendInfos.push({ layer: suitabilityLayer, title: "Suitability analysis" });
     const nativeLegendMount = legendContainer.querySelector<HTMLDivElement>(".map-legend-panel__native");
     if (nativeLegendMount && nativeLegendInfos.length > 0) {
@@ -1350,6 +1367,14 @@ async function createBigMap(
         container: nativeLegendMount,
         layerInfos: nativeLegendInfos,
         style: { type: "classic", layout: "stack" },
+        // The incidents/road-closures sublayers only draw at certain map
+        // scales (their Overview tier is excluded entirely in
+        // createTrafficLayer; Intermediate/Detailed still have their own
+        // scale ranges) -- Legend hides a sublayer's entry outside its
+        // scale range by default, which was the other half of why that
+        // row showed empty. This makes the legend describe the
+        // symbology regardless of the view's current zoom level.
+        respectLayerVisibility: false,
       });
     }
     const legendExpand = new Expand({ view, content: legendContainer, expandIcon: "legend", expandTooltip: "Legend & layers", expanded: true });
