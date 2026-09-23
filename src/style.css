@@ -90,9 +90,17 @@ body { margin: 0; font-family: system-ui, sans-serif; background: #f4f3ef; }
 .poi-count-table td:not(:first-child) { text-align: right; font-variant-numeric: tabular-nums; }
 .poi-count-table .poi-icon-badge { margin-left: 0; }
 
-.map-legend-panel { padding: 8px 10px; min-width: 210px; max-height: 320px; overflow-y: auto; font-size: 12px; }
+.map-legend-panel { padding: 8px 10px; min-width: 210px; max-width: 260px; max-height: 420px; overflow-y: auto; font-size: 12px; }
 .map-legend-panel .fake-legend__row { cursor: pointer; }
 .map-legend-panel input[type="checkbox"] { margin: 0; }
+.map-legend-panel .fake-legend__row { cursor: pointer; }
+.map-legend-panel input[type="checkbox"] { margin: 0; }
+/* Real Legend widget for the hosted layers (suitability + traffic),
+   mounted below the custom checkbox rows -- a top border sets it apart
+   as its own section, and esri-legend's own layout is left alone here
+   (it's set to force vertical "stack" layout where each is created). */
+.map-legend-panel__native { margin-top: 8px; padding-top: 8px; border-top: 1px solid #e2e2e2; }
+.map-legend-panel__native:empty { display: none; }
 
 .ai-card {
   break-inside: avoid; margin-bottom: var(--ai-gap);

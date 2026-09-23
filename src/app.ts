@@ -364,6 +364,24 @@ function categoryColor(category: string): string {
   return POI_CATEGORY_COLORS[hash % POI_CATEGORY_COLORS.length];
 }
 
+// Some main categories (derived by splitting each POI's description on
+// the first hyphen -- see mainCategoryOf in services/poi.ts) collapse a
+// single, more specific sub-category down to a generic-sounding label.
+// "Market" is one of these: every POI under it is actually
+// "Market-Supermarkets & Hypermarkets", so showing just "Market" hid
+// real information instead of usefully grouping several sub-types the
+// way "Restaurant" does. This only changes what's *displayed* -- the
+// underlying "Market" string is still what's used for the query filter
+// (LIKE 'Market-%'), poiByCategory's keys, and the color/icon lookups
+// above, so nothing else needs to change.
+const CATEGORY_DISPLAY_OVERRIDES: Record<string, string> = {
+  Market: "Market-Supermarkets & Hypermarkets",
+};
+
+function categoryDisplayName(category: string): string {
+  return CATEGORY_DISPLAY_OVERRIDES[category] ?? category;
+}
+
 // Keyword groups matched against the main-category names derived from
 // the new POI layer (see services/poi.ts) -- any category whose name
 // contains one of these substrings starts pre-checked in the "Nearby
@@ -537,7 +555,7 @@ async function buildPoiPicker(container: HTMLElement) {
         <calcite-label layout="inline" class="poi-checkbox-label">
           <calcite-checkbox class="poi-checkbox" data-index="${i}" ${isDefaultPoiCategory(cat) ? "checked" : ""}></calcite-checkbox>
           ${poiIconBadgeHtml(cat)}
-          ${cat}
+          ${categoryDisplayName(cat)}
         </calcite-label>
       `).join("")}
     </calcite-block>
@@ -962,7 +980,16 @@ async function createMiniMap(
     // after applyGreenPopulationRenderer so it reflects that renderer,
     // not the layer's original published one.
     try {
-      const legend = new Legend({ view, layerInfos: [{ layer: populationLayer, title: "Population" }] });
+      const legend = new Legend({
+        view,
+        layerInfos: [{ layer: populationLayer, title: "Population" }],
+        // Legend's default "auto" layout picks side-by-side once it
+        // decides there's room, which inside this card-sized mini map
+        // (and the Expand panel's own width) is what turned into rows of
+        // swatches running horizontally instead of a normal top-to-bottom
+        // list -- forcing "stack" makes it always lay out vertically.
+        style: { type: "classic", layout: "stack" },
+      });
       const legendExpand = new Expand({ view, content: legend, expandIcon: "legend", expandTooltip: "Legend", expanded: false });
       view.ui.add(legendExpand, "top-right");
     } catch (err) {
@@ -1050,7 +1077,7 @@ async function createBigMap(
       .filter((p) => catchmentContains(driveSection.catchment, x, y, p.x, p.y))
       .forEach((p) =>
         layer.add(
-          poiIconGraphic(p.x, p.y, category, { name: p.name, category: p.category, description: p.description, brand: p.brand }, {
+          poiIconGraphic(p.x, p.y, category, { name: p.name, category: categoryDisplayName(p.category), description: p.description, brand: p.brand }, {
             title: "{name}",
             content: p.brand ? "Category: {category}<br>Type: {description}<br>Brand: {brand}" : "Category: {category}<br>Type: {description}",
           })
@@ -1227,33 +1254,48 @@ async function createBigMap(
     console.error("Measurement widget failed to initialize:", err);
   }
 
-  // Legend + per-layer visibility toggles -- a custom panel rather than
-  // the built-in Legend widget, since that widget only reads renderers
-  // off FeatureLayers and these are plain GraphicsLayers.
+  // Legend + per-layer visibility toggles. GraphicsLayers (KPN marker,
+  // catchments, POI) have no published renderer for the built-in Legend
+  // widget to read, so those still get a custom row with a manual
+  // swatch/icon/CIM-symbol preview. The suitability FeatureLayer and both
+  // traffic sublayer groups, though, ARE real hosted layers whose
+  // symbology genuinely lives on the service -- for those, a hand-picked
+  // flat color was never actually representative of what's drawn (e.g.
+  // suitability's real class-break colors, or the traffic service's own
+  // speed-based line colors), so a real Legend widget is mounted for
+  // them below the toggle list instead, exactly like the population mini
+  // maps.
   try {
-    // `symbol` (when set) renders the layer's actual point/line/fill
-    // symbology into the swatch via symbolUtils, instead of a flat color
-    // square -- used for the KPN marker so the legend shows the real
-    // teardrop-pin-with-dot rather than a generic swatch.
     // KPN Fresh is listed first -- always on top, both in this list and
     // (via the `layers` array above, where centerLayer is last) on the
     // map itself.
-    // The Asia Pacific incidents+closures group (sublayer 45) toggles as
-    // one row, independent of the "Live traffic (India)" row -- toggling
-    // trafficLayer.visible would turn both regions off together, and this
-    // app's India traffic sublayers are separate from this group entirely.
+    //
+    // The India and Asia Pacific incidents groups are two separate
+    // Sublayers of the SAME trafficLayer MapImageLayer, toggled
+    // independently -- targeting trafficLayer.visible directly for the
+    // "India" row (as before) turned the whole service off, hiding the
+    // Asia Pacific incidents along with it, since a MapImageLayer's own
+    // visible=false overrides every sublayer's visible flag underneath
+    // it. Each row now targets its own Sublayer instead, so the two
+    // toggle independently, and the incidents row is listed first here
+    // to match their actual draw order on the map (the Asia Pacific
+    // group is added after the India group in createTrafficLayer, so it
+    // draws on top of it).
+    const indiaTraffic = trafficLayer?.findSublayerById(32) ?? null;
     const asiaPacificIncidents = trafficLayer?.findSublayerById(45) ?? null;
-    const legendRows: { title: string; color: string; symbol?: CIMSymbol; category?: string; layer: GraphicsLayer | FeatureLayer | MapImageLayer | Sublayer }[] = [
+    const legendRows: { title: string; color: string; symbol?: CIMSymbol; category?: string; native?: boolean; layer: GraphicsLayer | FeatureLayer | MapImageLayer | Sublayer }[] = [
       { title: "KPN Fresh", color: "#bada55", symbol: kpnStoreCimSymbol(), layer: centerLayer },
-      ...(suitabilityLayer ? [{ title: "Suitability analysis", color: "#2f7d32", layer: suitabilityLayer }] : []),
+      ...(suitabilityLayer ? [{ title: "Suitability analysis", color: "#2f7d32", native: true, layer: suitabilityLayer }] : []),
       { title: driveLayer.title as string, color: "#378add", layer: driveLayer },
       { title: walkLayer.title as string, color: "#0f6e56", layer: walkLayer },
-      ...(trafficLayer ? [{ title: "Live traffic (India)", color: "#e08b2f", layer: trafficLayer }] : []),
-      ...(asiaPacificIncidents ? [{ title: "Traffic incidents (Asia Pacific)", color: "#d85a30", layer: asiaPacificIncidents }] : []),
+      ...(asiaPacificIncidents ? [{ title: "Traffic incidents (Asia Pacific)", color: "#d85a30", native: true, layer: asiaPacificIncidents }] : []),
+      ...(indiaTraffic ? [{ title: "Live traffic (India)", color: "#e08b2f", native: true, layer: indiaTraffic }] : []),
       // `category` (rather than a separately-styled <calcite-icon>) is
       // what makes this render as the literal same badge image as the
-      // marker on the map itself -- see poiIconBadgeHtml.
-      ...poiLayers.map((l) => ({ title: l.title as string, color: categoryColor(l.title as string), category: l.title as string, layer: l })),
+      // marker on the map itself -- see poiIconBadgeHtml. It stays the
+      // raw category string (for correct color/icon lookup); only the
+      // displayed `title` runs through categoryDisplayName.
+      ...poiLayers.map((l) => ({ title: categoryDisplayName(l.title as string), color: categoryColor(l.title as string), category: l.title as string, layer: l })),
     ];
     // Checkbox state mirrors each layer's actual default `visible` --
     // true for everything above, false for the POI layers -- rather than
@@ -1261,15 +1303,20 @@ async function createBigMap(
     // what's actually drawn on the map.
     legendContainer.innerHTML = `
       <div class="map-legend-panel">
-        ${legendRows.map((r, i) => `
-          <label class="fake-legend__row">
-            <input type="checkbox" class="map-legend__toggle" data-layer-index="${i}" ${r.layer.visible ? "checked" : ""}>
-            ${r.category
-              ? poiIconBadgeHtml(r.category)
-              : `<span class="fake-legend__swatch" data-swatch-index="${i}" style="background:${r.symbol ? "transparent" : r.color}"></span>`}
-            ${r.title}
-          </label>
-        `).join("")}
+        <div class="map-legend-panel__toggles">
+          ${legendRows.map((r, i) => `
+            <label class="fake-legend__row">
+              <input type="checkbox" class="map-legend__toggle" data-layer-index="${i}" ${r.layer.visible ? "checked" : ""}>
+              ${r.category
+                ? poiIconBadgeHtml(r.category)
+                : r.native
+                  ? ""
+                  : `<span class="fake-legend__swatch" data-swatch-index="${i}" style="background:${r.symbol ? "transparent" : r.color}"></span>`}
+              ${r.title}
+            </label>
+          `).join("")}
+        </div>
+        <div class="map-legend-panel__native"></div>
       </div>
     `;
     legendContainer.querySelectorAll<HTMLInputElement>(".map-legend__toggle").forEach((cb) => {
@@ -1289,6 +1336,22 @@ async function createBigMap(
         console.error("Legend symbol preview failed to render:", err);
       });
     });
+    // Real, REST-published symbology for the hosted layers, via the
+    // built-in Legend widget -- same approach as the population mini
+    // maps (see createMiniMap above).
+    const nativeLegendInfos: __esri.LegendViewModelLayerInfo[] = [];
+    if (asiaPacificIncidents) nativeLegendInfos.push({ layer: asiaPacificIncidents, title: "Traffic incidents (Asia Pacific)" });
+    if (indiaTraffic) nativeLegendInfos.push({ layer: indiaTraffic, title: "Live traffic (India)" });
+    if (suitabilityLayer) nativeLegendInfos.push({ layer: suitabilityLayer, title: "Suitability analysis" });
+    const nativeLegendMount = legendContainer.querySelector<HTMLDivElement>(".map-legend-panel__native");
+    if (nativeLegendMount && nativeLegendInfos.length > 0) {
+      new Legend({
+        view,
+        container: nativeLegendMount,
+        layerInfos: nativeLegendInfos,
+        style: { type: "classic", layout: "stack" },
+      });
+    }
     const legendExpand = new Expand({ view, content: legendContainer, expandIcon: "legend", expandTooltip: "Legend & layers", expanded: true });
     view.ui.add(legendExpand, "top-left");
   } catch (err) {
@@ -1628,7 +1691,7 @@ async function renderResults(root: HTMLDivElement, data: any) {
               <tr class="poi-count-row${r.brandRows.length ? " poi-count-row--expandable" : ""}" data-toggle-index="${i}">
                 <td>
                   ${r.brandRows.length ? `<calcite-icon class="poi-count-chevron" icon="chevron-right" scale="s"></calcite-icon>` : ""}
-                  ${poiIconBadgeHtml(r.category, 14)}${r.category}
+                  ${poiIconBadgeHtml(r.category, 14)}${categoryDisplayName(r.category)}
                 </td>
                 <td>${formatInt(r.driveCount)}</td>
                 <td>${formatInt(r.walkCount)}</td>
@@ -1790,6 +1853,49 @@ async function renderResults(root: HTMLDivElement, data: any) {
     { target: goToTarget, scale: 2000, tilt: 60 },
     { animate: false }
   );
+
+  // The marker's own elevation is already correct (relative-to-scene,
+  // above) -- this is a separate problem: a *neighboring* building can
+  // still sit between the camera and the marker from this particular
+  // heading, hiding a perfectly well-placed rooftop marker behind
+  // someone else's roofline. There's no direct "is this graphic visible"
+  // query in the SDK, so hitTest at the marker's own screen position
+  // (restricted to just the marker's layer and the buildings layer, so
+  // it can't be confused by anything else) is the only way to tell --
+  // if the closest thing along that ray isn't the marker itself, try a
+  // few other headings around the same target until one has a clear
+  // line of sight.
+  async function markerIsVisible(): Promise<boolean> {
+    if (!currentSceneView) return true;
+    const screenPoint = currentSceneView.toScreen(goToTarget);
+    const hit = await currentSceneView.hitTest(screenPoint, { include: [sceneLayer, buildingsLayer] });
+    const top = hit.results[0];
+    return !!top && top.type === "graphic" && top.graphic === centerGraphic;
+  }
+
+  try {
+    if (!(await markerIsVisible())) {
+      const candidateHeadings = [90, 180, 270];
+      let clear = false;
+      for (const heading of candidateHeadings) {
+        await currentSceneView.goTo({ target: goToTarget, scale: 2000, tilt: 60, heading }, { animate: false });
+        if (await markerIsVisible()) {
+          clear = true;
+          break;
+        }
+      }
+      if (!clear) {
+        // None of those headings cleared it either -- a near-overhead
+        // view makes a neighboring building far less likely to sit
+        // between the camera and a rooftop-height marker regardless of
+        // which direction it's in, so this is the safe fallback rather
+        // than trying still more headings.
+        await currentSceneView.goTo({ target: goToTarget, scale: 2000, tilt: 15 }, { animate: false });
+      }
+    }
+  } catch (err) {
+    console.error("Marker-visibility check failed -- keeping the current camera position:", err, locationName);
+  }
 
   const basemapGallery = new BasemapGallery({ view: currentSceneView });
   const basemapExpand = new Expand({ view: currentSceneView, content: basemapGallery, expandIcon: "basemap", expandTooltip: "Change basemap" });
