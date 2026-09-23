@@ -553,7 +553,7 @@ async function buildPoiPicker(container: HTMLElement) {
     return;
   }
   container.innerHTML = `
-    <calcite-block heading="Nearby places" description="Choose which categories to fetch from your uploaded POI layer — each shows up as its own toggleable, color-coded layer on the map" collapsible open>
+    <calcite-block heading="Nearby places" description="Choose which POI categories to fetch" collapsible open>
       <div class="var-picker-actions">
         <calcite-button appearance="outline" scale="s" id="select-all-pois">Select all</calcite-button>
         <calcite-button appearance="outline" scale="s" id="select-none-pois">Select none</calcite-button>
@@ -1324,36 +1324,32 @@ async function createBigMap(
     // Sublayer instance directly was leaving the incidents group's entry
     // blank.
     const nativeLegendMount = legendContainer.querySelector<HTMLDivElement>(".map-legend-panel__native");
-    legendRows.forEach((r, i) => {
-      if (!r.native || !nativeLegendMount) return;
-      let layerInfo: __esri.LegendViewModelLayerInfo | null = null;
-      if (r.layer === asiaPacificIncidents && trafficLayer) {
-        layerInfo = { layer: trafficLayer, sublayerIds: [45], title: r.title };
-      } else if (r.layer === indiaTraffic && trafficLayer) {
-        layerInfo = { layer: trafficLayer, sublayerIds: [32], title: r.title };
-      } else if (r.layer === suitabilityLayer) {
-        layerInfo = { layer: suitabilityLayer as FeatureLayer, title: r.title };
-      }
-      if (!layerInfo) return;
-      const item = document.createElement("div");
-      item.dataset.nativeIndex = String(i);
-      item.style.display = r.layer.visible ? "" : "none";
-      nativeLegendMount.appendChild(item);
-      new Legend({
+    let nativeLegendWidget: Legend | null = null;
+    function rebuildNativeLegend() {
+      nativeLegendWidget?.destroy();
+      nativeLegendWidget = null;
+      if (!nativeLegendMount) return;
+      const infos: __esri.LegendViewModelLayerInfo[] = [];
+      legendRows.forEach((r) => {
+        if (!r.native || !r.layer.visible) return;
+        if (r.layer === asiaPacificIncidents && trafficLayer) {
+          infos.push({ layer: trafficLayer, sublayerIds: [45], title: r.title });
+        } else if (r.layer === indiaTraffic && trafficLayer) {
+          infos.push({ layer: trafficLayer, sublayerIds: [32], title: r.title });
+        } else if (r.layer === suitabilityLayer) {
+          infos.push({ layer: suitabilityLayer as FeatureLayer, title: r.title });
+        }
+      });
+      if (infos.length === 0) return;
+      nativeLegendWidget = new Legend({
         view,
-        container: item,
-        layerInfos: [layerInfo],
+        container: nativeLegendMount,
+        layerInfos: infos,
         style: { type: "classic", layout: "stack" },
-        // The incidents/road-closures sublayers only draw at certain map
-        // scales (their Overview tier is excluded entirely in
-        // createTrafficLayer; Intermediate/Detailed still have their own
-        // scale ranges) -- Legend hides a sublayer's entry outside its
-        // scale range by default, which was the other half of why that
-        // row showed empty. This makes the legend describe the
-        // symbology regardless of the view's current zoom level.
         respectLayerVisibility: false,
       });
-    });
+    }
+    rebuildNativeLegend();
     // Swap the flat swatch for a rendered preview of the real symbol,
     // where one was given -- async, so it fills in a moment after the
     // legend first paints rather than blocking it.
@@ -1369,12 +1365,7 @@ async function createBigMap(
       cb.addEventListener("change", () => {
         const idx = Number(cb.dataset.layerIndex);
         legendRows[idx].layer.visible = cb.checked;
-        // Native rows (suitability/traffic) have their own Legend widget
-        // in a wrapper div built above -- hide/show that wrapper in step
-        // with the checkbox, since the Legend widget doesn't reliably
-        // react to a sublayer's own visible flag on its own.
-        const nativeItem = legendContainer.querySelector<HTMLElement>(`[data-native-index="${idx}"]`);
-        if (nativeItem) nativeItem.style.display = cb.checked ? "" : "none";
+        if (legendRows[idx].native) rebuildNativeLegend();
       });
     });
     const legendExpand = new Expand({ view, content: legendContainer, expandIcon: "legend", expandTooltip: "Legend & layers", expanded: true });
