@@ -1332,67 +1332,70 @@ async function createBigMap(
     view.ui.add(legendExpand, "top-left");
     // Real, REST-published symbology for the hosted layers, via the
     // built-in Legend widget -- same approach as the population mini
-    // maps (see createMiniMap above). A single Legend widget, destroyed
-    // and rebuilt from scratch every time a native row's checkbox
-    // changes, scoped only to the rows currently checked on -- an
-    // earlier version of this created one Legend widget per native row,
-    // all at once, which triggered an internal Calcite/ArcGIS
-    // IntersectionObserver error ("Cannot read properties of null
-    // (reading 'disconnect')") that aborted this whole try block before
-    // the Expand widget below ever got created, breaking the "Legend &
-    // layers" button entirely. Keeping only one widget instance alive at
-    // a time avoids that. Referenced via the parent trafficLayer +
-    // `sublayerIds` (rather than passing the group Sublayer object
-    // directly) -- that's the documented way to scope a MapImageLayer's
-    // legend to specific sublayers, and it's what actually walks down
-    // into each sublayer's own renderer; passing the Sublayer instance
-    // directly was leaving the incidents group's entry blank.
-    // This whole function's body is wrapped in its own try/catch --
-    // whatever ArcGIS/Calcite-internal issue was throwing out of Legend
-    // widget construction here (the "disconnect" crash from before, or
-    // anything else in the same vein) must never be able to propagate up
-    // and abort the rest of this outer try block, since that's exactly
-    // what was taking the "Legend & layers" Expand button and the basic
-    // layer checkboxes down with it -- all of that HTML/listener setup
-    // below still needs to run even if this part fails outright.
+    // maps (see createMiniMap above). The widget is created exactly ONCE
+    // and its `layerInfos` is reassigned on every toggle from then on,
+    // rather than destroying and reconstructing a new widget each time --
+    // destroy+recreate against the same MapImageLayer sublayerIds was
+    // what left the traffic-incidents symbology unable to come back after
+    // being toggled off and back on (some internal legend-fetch cache
+    // keyed to that layer/sublayer combo apparently doesn't get
+    // refreshed by a second widget instance the way it does for the
+    // first). Reassigning `layerInfos` on the same live instance is the
+    // normal, reactive way this widget is meant to be updated. Referenced
+    // via the parent trafficLayer + `sublayerIds` (rather than passing
+    // the group Sublayer object directly) -- that's the documented way to
+    // scope a MapImageLayer's legend to specific sublayers, and it's what
+    // actually walks down into each sublayer's own renderer; passing the
+    // Sublayer instance directly was leaving the incidents group's entry
+    // blank. This whole section is wrapped in its own try/catch -- a
+    // failure here must never be able to propagate up and take the
+    // "Legend & layers" Expand button or the layer checkboxes down with
+    // it (that's what an earlier version of this was doing).
     const nativeLegendMount = legendContainer.querySelector<HTMLDivElement>(".map-legend-panel__native");
+    function computeNativeLegendInfos(): __esri.LegendViewModelLayerInfo[] {
+      const infos: __esri.LegendViewModelLayerInfo[] = [];
+      legendRows.forEach((r) => {
+        if (!r.native || !r.layer.visible) return;
+        if (r.layer === asiaPacificIncidents && trafficLayer) {
+          infos.push({ layer: trafficLayer, sublayerIds: [45], title: r.title });
+        } else if (r.layer === indiaTraffic && trafficLayer) {
+          infos.push({ layer: trafficLayer, sublayerIds: [32], title: r.title });
+        } else if (r.layer === suitabilityLayer) {
+          infos.push({ layer: suitabilityLayer as FeatureLayer, title: r.title });
+        }
+      });
+      return infos;
+    }
     let nativeLegendWidget: Legend | null = null;
-    function rebuildNativeLegend() {
-      try {
-        nativeLegendWidget?.destroy();
-        nativeLegendWidget = null;
-        if (!nativeLegendMount) return;
-        const infos: __esri.LegendViewModelLayerInfo[] = [];
-        legendRows.forEach((r) => {
-          if (!r.native || !r.layer.visible) return;
-          if (r.layer === asiaPacificIncidents && trafficLayer) {
-            infos.push({ layer: trafficLayer, sublayerIds: [45], title: r.title });
-          } else if (r.layer === indiaTraffic && trafficLayer) {
-            infos.push({ layer: trafficLayer, sublayerIds: [32], title: r.title });
-          } else if (r.layer === suitabilityLayer) {
-            infos.push({ layer: suitabilityLayer as FeatureLayer, title: r.title });
-          }
-        });
-        if (infos.length === 0) return;
+    try {
+      if (nativeLegendMount) {
         nativeLegendWidget = new Legend({
           view,
           container: nativeLegendMount,
-          layerInfos: infos,
+          layerInfos: computeNativeLegendInfos(),
           style: { type: "classic", layout: "stack" },
-          // The incidents/road-closures sublayers only draw at certain map
-          // scales (their Overview tier is excluded entirely in
-          // createTrafficLayer; Intermediate/Detailed still have their own
-          // scale ranges) -- Legend hides a sublayer's entry outside its
-          // scale range by default, which was the other half of why that
-          // row showed empty. This makes the legend describe the
-          // symbology regardless of the view's current zoom level.
-          respectLayerVisibility: false,
+          // Only needed for the traffic sublayers -- their Intermediate/
+          // Detailed tiers have their own scale ranges, and Legend hides
+          // an entry outside its scale range by default, which was why
+          // that row showed empty. Suitability is a plain FeatureLayer
+          // with no such scale-range concern (same as the population
+          // mini map's legend, which needs no override either), and
+          // setting this for it was actually the reason suitability's
+          // own symbology stopped showing at all.
+          ...(trafficLayer ? { respectLayerVisibility: false } : {}),
         });
+      }
+    } catch (err) {
+      console.error("Native legend widget failed to build -- the checkbox rows and Expand button above are unaffected:", err);
+    }
+    function rebuildNativeLegend() {
+      try {
+        if (!nativeLegendWidget) return;
+        nativeLegendWidget.layerInfos = computeNativeLegendInfos();
       } catch (err) {
-        console.error("Native legend widget failed to build -- the checkbox rows and Expand button above are unaffected:", err);
+        console.error("Native legend widget failed to update:", err);
       }
     }
-    rebuildNativeLegend();
     // Swap the flat swatch for a rendered preview of the real symbol,
     // where one was given -- async, so it fills in a moment after the
     // legend first paints rather than blocking it.
