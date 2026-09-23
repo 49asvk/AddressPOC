@@ -24,6 +24,7 @@ import Fullscreen from "@arcgis/core/widgets/Fullscreen";
 import Measurement from "@arcgis/core/widgets/Measurement";
 import Home from "@arcgis/core/widgets/Home";
 import Expand from "@arcgis/core/widgets/Expand";
+import Legend from "@arcgis/core/widgets/Legend";
 import { enrichPoint } from "./services/geoenrichment";
 import { sampleElevation } from "./services/elevation";
 import { fetchPoiCategories, queryNearbyPois, queryPoisInGeometry, type PoiResult } from "./services/poi";
@@ -324,16 +325,43 @@ function destroyAllViews() {
 
 // --- Category colors -------------------------------------------------
 
-// Same palette used for the consumer-styles donut, reused here so every
-// POI category gets a stable color across the checkbox picker and the
-// big map's layers/legend -- hashed off the category name so the color
-// doesn't shift around if categories are added/removed from the layer.
+// Used by the consumer-styles donut only (buildConsumerStylesDonut below
+// indexes into this directly) -- that chart never has more than 10
+// segments, so a small palette is fine there.
 const DONUT_COLORS = ["#0f6e56", "#5dcaa5", "#378add", "#b6771a", "#d85a30", "#6b4fbb", "#99355a", "#2f7d32", "#26215c", "#7f77dd"];
 
+// A separate, wider palette for POI categories -- the real POI layer's
+// main-category list runs well past 10 entries, and hashing the category
+// name into a 10-color palette reliably produces same-color collisions
+// once the category count exceeds it (exactly what happened: "Leisure"/
+// "Workshop" landed on the same hash bucket, and separately so did
+// "Restaurant"/"Stadium"). categoryColor() below assigns by each
+// category's position in the actual fetched list instead of a hash, so
+// every category gets its own color as long as the layer has no more
+// main categories than there are colors here.
+const POI_CATEGORY_COLORS = [
+  "#0f6e56", "#5dcaa5", "#378add", "#b6771a", "#d85a30",
+  "#6b4fbb", "#99355a", "#2f7d32", "#26215c", "#7f77dd",
+  "#c0392b", "#16a085", "#8e44ad", "#e67e22", "#2980b9",
+  "#27ae60", "#c2185b", "#00838f", "#f39c12", "#5d4037",
+  "#455a64", "#7cb342", "#ad1457", "#3949ab", "#00695c",
+  "#bf360c", "#4527a0", "#558b2f", "#ef6c00", "#01579b",
+];
+
 function categoryColor(category: string): string {
+  // Index within poiCategoryList (the actual list fetched from the
+  // layer) -- deterministic and collision-free up to
+  // POI_CATEGORY_COLORS.length categories, instead of hoping a hash
+  // lands in different buckets by luck.
+  const index = poiCategoryList.indexOf(category);
+  if (index !== -1) return POI_CATEGORY_COLORS[index % POI_CATEGORY_COLORS.length];
+  // Fallback for anything called before fetchPoiCategories() has
+  // resolved (so poiCategoryList is still empty) -- keeps this from ever
+  // throwing or returning undefined; once the list is populated,
+  // everything re-renders through the index-based path above anyway.
   let hash = 0;
   for (let i = 0; i < category.length; i++) hash = (hash * 31 + category.charCodeAt(i)) >>> 0;
-  return DONUT_COLORS[hash % DONUT_COLORS.length];
+  return POI_CATEGORY_COLORS[hash % POI_CATEGORY_COLORS.length];
 }
 
 // Keyword groups matched against the main-category names derived from
@@ -433,6 +461,17 @@ function poiMarkerDataUri(category: string): string {
   return uri;
 }
 
+// Renders the exact same colored-badge image used for a category's map
+// marker (poiMarkerDataUri) as an <img>, for use anywhere else a
+// category needs to be identified -- the legend, the POI picker, and the
+// POI count table. Using the identical data: URI (not a separately
+// styled <calcite-icon>) is what guarantees these all look pixel-for-
+// pixel the same as the marker on the map, instead of a filled circle on
+// the map next to a bare, unfilled glyph everywhere else.
+function poiIconBadgeHtml(category: string, size = 16): string {
+  return `<img class="poi-icon-badge" src="${poiMarkerDataUri(category)}" width="${size}" height="${size}" alt="">`;
+}
+
 // Icon-badge equivalent of pointGraphic(), used only for POI points --
 // the KPN store marker and the plain selected-location dot (pointGraphic
 // itself) are untouched.
@@ -497,7 +536,7 @@ async function buildPoiPicker(container: HTMLElement) {
       ${categories.map((cat, i) => `
         <calcite-label layout="inline" class="poi-checkbox-label">
           <calcite-checkbox class="poi-checkbox" data-index="${i}" ${isDefaultPoiCategory(cat) ? "checked" : ""}></calcite-checkbox>
-          <calcite-icon class="poi-icon-swatch" icon="${categoryIcon(cat).calciteIcon}" scale="s" style="color:${categoryColor(cat)}"></calcite-icon>
+          ${poiIconBadgeHtml(cat)}
           ${cat}
         </calcite-label>
       `).join("")}
@@ -916,6 +955,19 @@ async function createMiniMap(
 
   if (populationLayer) {
     await applyGreenPopulationRenderer(populationLayer, view);
+    // The built-in Legend widget (unlike the big map's custom fake-legend
+    // panel) works fine here since populationLayer is a real FeatureLayer
+    // with an actual renderer -- it just reads the Green 5 ramp applied
+    // above and draws its class swatches, no custom markup needed. Added
+    // after applyGreenPopulationRenderer so it reflects that renderer,
+    // not the layer's original published one.
+    try {
+      const legend = new Legend({ view, layerInfos: [{ layer: populationLayer, title: "Population" }] });
+      const legendExpand = new Expand({ view, content: legend, expandIcon: "legend", expandTooltip: "Legend", expanded: false });
+      view.ui.add(legendExpand, "top-right");
+    } catch (err) {
+      console.error("Legend widget failed to initialize on the population mini map:", err);
+    }
   }
 
   // Clip the population layer to just this catchment's shape -- the
@@ -1191,17 +1243,17 @@ async function createBigMap(
     // trafficLayer.visible would turn both regions off together, and this
     // app's India traffic sublayers are separate from this group entirely.
     const asiaPacificIncidents = trafficLayer?.findSublayerById(45) ?? null;
-    const legendRows: { title: string; color: string; symbol?: CIMSymbol; icon?: string; layer: GraphicsLayer | FeatureLayer | MapImageLayer | Sublayer }[] = [
+    const legendRows: { title: string; color: string; symbol?: CIMSymbol; category?: string; layer: GraphicsLayer | FeatureLayer | MapImageLayer | Sublayer }[] = [
       { title: "KPN Fresh", color: "#bada55", symbol: kpnStoreCimSymbol(), layer: centerLayer },
       ...(suitabilityLayer ? [{ title: "Suitability analysis", color: "#2f7d32", layer: suitabilityLayer }] : []),
       { title: driveLayer.title as string, color: "#378add", layer: driveLayer },
       { title: walkLayer.title as string, color: "#0f6e56", layer: walkLayer },
       ...(trafficLayer ? [{ title: "Live traffic (India)", color: "#e08b2f", layer: trafficLayer }] : []),
       ...(asiaPacificIncidents ? [{ title: "Traffic incidents (Asia Pacific)", color: "#d85a30", layer: asiaPacificIncidents }] : []),
-      // Same Calcite icon glyph shown here as on the map markers themselves
-      // (poiIconGraphic/poiMarkerDataUri), so a category is identifiable
-      // the same way in both places.
-      ...poiLayers.map((l) => ({ title: l.title as string, color: categoryColor(l.title as string), icon: categoryIcon(l.title as string).calciteIcon, layer: l })),
+      // `category` (rather than a separately-styled <calcite-icon>) is
+      // what makes this render as the literal same badge image as the
+      // marker on the map itself -- see poiIconBadgeHtml.
+      ...poiLayers.map((l) => ({ title: l.title as string, color: categoryColor(l.title as string), category: l.title as string, layer: l })),
     ];
     // Checkbox state mirrors each layer's actual default `visible` --
     // true for everything above, false for the POI layers -- rather than
@@ -1212,8 +1264,8 @@ async function createBigMap(
         ${legendRows.map((r, i) => `
           <label class="fake-legend__row">
             <input type="checkbox" class="map-legend__toggle" data-layer-index="${i}" ${r.layer.visible ? "checked" : ""}>
-            ${r.icon
-              ? `<calcite-icon class="fake-legend__icon" icon="${r.icon}" scale="s" style="color:${r.color}"></calcite-icon>`
+            ${r.category
+              ? poiIconBadgeHtml(r.category)
               : `<span class="fake-legend__swatch" data-swatch-index="${i}" style="background:${r.symbol ? "transparent" : r.color}"></span>`}
             ${r.title}
           </label>
@@ -1286,7 +1338,7 @@ function buildNearbyPopulation(enrichment: Record<string, any>): string | null {
       ? `<div class="ai-card__subheading">${heading}</div><div class="stat-grid">${stats.map((s) => `<div><div class="ai-card__stat" style="font-size:20px">${s.value}</div><div class="ai-card__stat-label">${s.label}</div></div>`).join("")}</div>`
       : "";
 
-  return `${gridHtml(stats2024, "2024 Population (Current Year)")}${gridHtml(stats2026, "2026 Projected Population")}${extraRows}<div class="ai-card__minimap"></div>`;
+  return `${gridHtml(stats2024, "2024 Population")}${gridHtml(stats2026, "2026 Projected Population")}${extraRows}<div class="ai-card__minimap"></div>`;
 }
 
 function buildAgePyramid(enrichment: Record<string, any>): string | null {
@@ -1576,7 +1628,7 @@ async function renderResults(root: HTMLDivElement, data: any) {
               <tr class="poi-count-row${r.brandRows.length ? " poi-count-row--expandable" : ""}" data-toggle-index="${i}">
                 <td>
                   ${r.brandRows.length ? `<calcite-icon class="poi-count-chevron" icon="chevron-right" scale="s"></calcite-icon>` : ""}
-                  <span class="poi-swatch" style="background:${categoryColor(r.category)}"></span>${r.category}
+                  ${poiIconBadgeHtml(r.category, 14)}${r.category}
                 </td>
                 <td>${formatInt(r.driveCount)}</td>
                 <td>${formatInt(r.walkCount)}</td>
