@@ -497,9 +497,7 @@ function poiIconBadgeHtml(category: string, size = 16): string {
 
 // Icon-badge equivalent of pointGraphic(), used only for POI points --
 // the KPN store marker and the plain selected-location dot (pointGraphic
-// itself) are untouched. Sized a bit larger than the old filled badge
-// (28 vs 22) since a bare line icon has less visual weight than a solid
-// disc and needs the extra size to stay as legible on the map.
+// itself) are untouched.
 function poiIconGraphic(
   x: number,
   y: number,
@@ -509,7 +507,7 @@ function poiIconGraphic(
 ) {
   return new Graphic({
     geometry: { type: "point", x, y, spatialReference: { wkid: 4326 } } as any,
-    symbol: new PictureMarkerSymbol({ url: poiMarkerDataUri(category), width: 12, height: 12 }),
+    symbol: new PictureMarkerSymbol({ url: poiMarkerDataUri(category), width: 16, height: 16 }),
     attributes,
     popupTemplate: popupTemplate as any,
   });
@@ -1308,46 +1306,91 @@ async function createBigMap(
     // true for everything above, false for the POI layers -- rather than
     // being hardcoded, so this panel can never drift out of sync with
     // what's actually drawn on the map.
-        // Real, REST-published symbology for the hosted layers, via the
+    legendContainer.innerHTML = `
+      <div class="map-legend-panel">
+        <div class="map-legend-panel__toggles">
+          ${legendRows.map((r, i) => `
+            <label class="fake-legend__row">
+              <input type="checkbox" class="map-legend__toggle" data-layer-index="${i}" ${r.layer.visible ? "checked" : ""}>
+              ${r.category
+                ? poiIconBadgeHtml(r.category)
+                : r.native
+                  ? ""
+                  : `<span class="fake-legend__swatch" data-swatch-index="${i}" style="background:${r.symbol ? "transparent" : r.color}"></span>`}
+              ${r.title}
+            </label>
+          `).join("")}
+        </div>
+        <div class="map-legend-panel__native"></div>
+      </div>
+    `;
+    // The button and its base content (checkboxes) go live right here,
+    // before anything below that touches the native Legend widgets --
+    // that way the "Legend & layers" button and layer toggles always
+    // work even if the native-symbology code beneath this fails.
+    const legendExpand = new Expand({ view, content: legendContainer, expandIcon: "legend", expandTooltip: "Legend & layers", expanded: true });
+    view.ui.add(legendExpand, "top-left");
+    // Real, REST-published symbology for the hosted layers, via the
     // built-in Legend widget -- same approach as the population mini
-    // maps (see createMiniMap above). One Legend widget per native row
-    // (rather than one shared widget for all of them), each in its own
-    // wrapper div -- that wrapper's display is toggled directly by the
-    // checkbox handler below, since the widget itself doesn't reliably
-    // react to a *sublayer's* own visible flag when it's referenced via
-    // sublayerIds on the parent MapImageLayer (that's what let a
-    // toggled-off layer's symbology keep showing). Referenced via the
-    // parent trafficLayer + `sublayerIds` (rather than passing the group
-    // Sublayer object directly) -- that's the documented way to scope a
-    // MapImageLayer's legend to specific sublayers, and it's what
-    // actually walks down into each sublayer's own renderer; passing the
-    // Sublayer instance directly was leaving the incidents group's entry
-    // blank.
+    // maps (see createMiniMap above). A single Legend widget, destroyed
+    // and rebuilt from scratch every time a native row's checkbox
+    // changes, scoped only to the rows currently checked on -- an
+    // earlier version of this created one Legend widget per native row,
+    // all at once, which triggered an internal Calcite/ArcGIS
+    // IntersectionObserver error ("Cannot read properties of null
+    // (reading 'disconnect')") that aborted this whole try block before
+    // the Expand widget below ever got created, breaking the "Legend &
+    // layers" button entirely. Keeping only one widget instance alive at
+    // a time avoids that. Referenced via the parent trafficLayer +
+    // `sublayerIds` (rather than passing the group Sublayer object
+    // directly) -- that's the documented way to scope a MapImageLayer's
+    // legend to specific sublayers, and it's what actually walks down
+    // into each sublayer's own renderer; passing the Sublayer instance
+    // directly was leaving the incidents group's entry blank.
+    // This whole function's body is wrapped in its own try/catch --
+    // whatever ArcGIS/Calcite-internal issue was throwing out of Legend
+    // widget construction here (the "disconnect" crash from before, or
+    // anything else in the same vein) must never be able to propagate up
+    // and abort the rest of this outer try block, since that's exactly
+    // what was taking the "Legend & layers" Expand button and the basic
+    // layer checkboxes down with it -- all of that HTML/listener setup
+    // below still needs to run even if this part fails outright.
     const nativeLegendMount = legendContainer.querySelector<HTMLDivElement>(".map-legend-panel__native");
     let nativeLegendWidget: Legend | null = null;
     function rebuildNativeLegend() {
-      nativeLegendWidget?.destroy();
-      nativeLegendWidget = null;
-      if (!nativeLegendMount) return;
-      const infos: __esri.LegendViewModelLayerInfo[] = [];
-      legendRows.forEach((r) => {
-        if (!r.native || !r.layer.visible) return;
-        if (r.layer === asiaPacificIncidents && trafficLayer) {
-          infos.push({ layer: trafficLayer, sublayerIds: [45], title: r.title });
-        } else if (r.layer === indiaTraffic && trafficLayer) {
-          infos.push({ layer: trafficLayer, sublayerIds: [32], title: r.title });
-        } else if (r.layer === suitabilityLayer) {
-          infos.push({ layer: suitabilityLayer as FeatureLayer, title: r.title });
-        }
-      });
-      if (infos.length === 0) return;
-      nativeLegendWidget = new Legend({
-        view,
-        container: nativeLegendMount,
-        layerInfos: infos,
-        style: { type: "classic", layout: "stack" },
-        respectLayerVisibility: false,
-      });
+      try {
+        nativeLegendWidget?.destroy();
+        nativeLegendWidget = null;
+        if (!nativeLegendMount) return;
+        const infos: __esri.LegendViewModelLayerInfo[] = [];
+        legendRows.forEach((r) => {
+          if (!r.native || !r.layer.visible) return;
+          if (r.layer === asiaPacificIncidents && trafficLayer) {
+            infos.push({ layer: trafficLayer, sublayerIds: [45], title: r.title });
+          } else if (r.layer === indiaTraffic && trafficLayer) {
+            infos.push({ layer: trafficLayer, sublayerIds: [32], title: r.title });
+          } else if (r.layer === suitabilityLayer) {
+            infos.push({ layer: suitabilityLayer as FeatureLayer, title: r.title });
+          }
+        });
+        if (infos.length === 0) return;
+        nativeLegendWidget = new Legend({
+          view,
+          container: nativeLegendMount,
+          layerInfos: infos,
+          style: { type: "classic", layout: "stack" },
+          // The incidents/road-closures sublayers only draw at certain map
+          // scales (their Overview tier is excluded entirely in
+          // createTrafficLayer; Intermediate/Detailed still have their own
+          // scale ranges) -- Legend hides a sublayer's entry outside its
+          // scale range by default, which was the other half of why that
+          // row showed empty. This makes the legend describe the
+          // symbology regardless of the view's current zoom level.
+          respectLayerVisibility: false,
+        });
+      } catch (err) {
+        console.error("Native legend widget failed to build -- the checkbox rows and Expand button above are unaffected:", err);
+      }
     }
     rebuildNativeLegend();
     // Swap the flat swatch for a rendered preview of the real symbol,
@@ -1368,8 +1411,6 @@ async function createBigMap(
         if (legendRows[idx].native) rebuildNativeLegend();
       });
     });
-    const legendExpand = new Expand({ view, content: legendContainer, expandIcon: "legend", expandTooltip: "Legend & layers", expanded: true });
-    view.ui.add(legendExpand, "top-left");
   } catch (err) {
     console.error("Legend panel failed to initialize:", err);
   }
